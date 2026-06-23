@@ -1,526 +1,299 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
 import { 
-    Bus, FileText, Wallet, Zap, Store, 
-    LifeBuoy, LogOut, Menu, X, Sun, Moon 
+  Menu, X, Home, Bus, Map as MapIcon, CalendarClock, 
+  Banknote, CheckCircle2, Globe, LogOut, Sun, Moon, ShieldCheck, 
+  Activity, Scale, Briefcase, Users, Settings
 } from 'lucide-react';
 
-// --- LIVE MODULES ---
-import ManifestHub from '../modules/manifest/ManifestHub';
-import PartnerStoreModule from '../modules/store/PartnerStoreModule';
+// ========================================================================
+// 1. LIVE MODULE IMPORTS
+// ========================================================================
+import BusConfigModule from '../modules/bus-config/BusConfigModule';
+import ApprovalsModule from '../modules/approvals/ApprovalsModule';
+import RoutesModule from '../modules/routes/RoutesModule';
+import SchedulerModule from '../modules/scheduler/SchedulerModule';
 import TreasuryModule from '../modules/treasury/TreasuryModule';
-import SurgeModule from '../modules/surge/SurgeModule';
-import SupportModule from '../modules/support/SupportModule'; // 🚀 INJECTED SUPPORT MODULE
+import ReconciliationModule from '../modules/reconciliation/ReconciliationModule';
+import AnalyticsModule from '../modules/analytics/AnalyticsModule'; 
+import PartnerModule from '../modules/partner/PartnerModule'; 
+import ClientModule from '../modules/clients/ClientsModule'; 
+import AuditorModule from '../modules/auditor/AuditorModule'; 
+import ControlCentreModule from '../modules/control-centre/ControlCentreModule';
 
-/**
- * AYABUS PARTNER PORTAL
- * ------------------------------------------------------------------
- * Module: Main Application Layout
- * File: HomePage.jsx
- */
+// ========================================================================
+// 2. CATEGORIZED MENU STRUCTURE
+// ========================================================================
+const MENU_CATEGORIES = [
+  {
+    title: 'Onboard Vehicle',
+    items: [
+      { id: 'BUS_CONFIG', label: 'Bus Configurator', icon: <Bus size={18} /> },
+      { id: 'ROUTES', label: 'Route Network', icon: <MapIcon size={18} /> },
+      { id: 'SCHEDULER', label: 'Smart Scheduler', icon: <CalendarClock size={18} /> },
+    ]
+  },
+  {
+    title: 'Care',
+    items: [
+      { id: 'PARTNER', label: 'Partner Management', icon: <Briefcase size={18} /> },
+      { id: 'CLIENTS', label: 'Client Registry', icon: <Users size={18} /> },
+    ]
+  },
+  {
+    title: 'Finance',
+    items: [
+      { id: 'TREASURY', label: 'Treasury Vault', icon: <Banknote size={18} /> },
+      { id: 'RECONCILIATION', label: 'Reconciliation', icon: <CheckCircle2 size={18} /> },
+    ]
+  },
+  {
+    title: 'Intel',
+    items: [
+      { id: 'ANALYTICS', label: 'Analytics Centre', icon: <Activity size={18} /> },
+      { id: 'AUDITOR', label: 'Audit Log', icon: <Scale size={18} /> },
+    ]
+  },
+  {
+    title: 'System Settings',
+    items: [
+      { id: 'APPROVALS', label: 'Approvals Queue', icon: <ShieldCheck size={18} /> },
+      { id: 'CONTROL', label: 'Control Centre', icon: <Settings size={18} /> },
+    ]
+  }
+];
 
-const HomePage = () => {
-    const { tenant, logout, isDarkMode, toggleTheme } = useAuth();
-    const navigate = useNavigate();
-    const location = useLocation();
+const HomePage = ({ user, onLogout }) => {
+  const [activeModule, setActiveModule] = useState('HOME');
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  
+  // THEME ENGINE: Syncs with localStorage, defaults to Light Mode (false)
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('ayabus-partner-theme');
+    return savedTheme === 'dark';
+  });
 
-    // Controls the right-hand sliding menu
-    const [isMenuOpen, setIsMenuOpen] = useState(false);
+  // THEME EFFECT: Applies classes and saves to storage
+  useEffect(() => {
+    localStorage.setItem('ayabus-partner-theme', isDarkMode ? 'dark' : 'light');
+    if (isDarkMode) {
+      document.body.classList.add('dark-mode');
+      document.body.classList.remove('light-mode');
+    } else {
+      document.body.classList.add('light-mode');
+      document.body.classList.remove('dark-mode');
+    }
+  }, [isDarkMode]);
 
-    // ========================================================================
-    // 🚨 THE FIX: Force DOM Synchronization to override the LoginPage conflict
-    // ========================================================================
-    useEffect(() => {
-        const root = document.documentElement;
-        if (isDarkMode) {
-            root.classList.add('dark');
-            root.setAttribute('data-theme', 'dark');
-            localStorage.setItem('theme', 'dark');
-        } else {
-            root.classList.remove('dark');
-            root.setAttribute('data-theme', 'light');
-            localStorage.setItem('theme', 'light');
-        }
-    }, [isDarkMode]);
-    // ========================================================================
+  const toggleTheme = () => setIsDarkMode(!isDarkMode);
 
-    // Lock body scroll when menu is open to prevent double-scrolling on mobile
-    useEffect(() => {
-        if (isMenuOpen) {
-            document.body.style.overflow = 'hidden';
-        } else {
-            document.body.style.overflow = 'unset';
-        }
-        return () => { document.body.style.overflow = 'unset'; };
-    }, [isMenuOpen]);
-
-    // --- NAVIGATION ARCHITECTURE ---
-    const MENU_CATEGORIES = [
-        {
-            title: 'Operations',
-            items: [
-                { path: '/manifest', label: 'Live Manifest', icon: <FileText size={18} /> },
-                { path: '/surge', label: 'Surge Exchange', icon: <Zap size={18} /> },
-            ]
-        },
-        {
-            title: 'Assets & Finance',
-            items: [
-                { path: '/fleet', label: 'Fleet Registry', icon: <Bus size={18} /> },
-                { path: '/treasury', label: 'Financial Ledger', icon: <Wallet size={18} /> },
-                { path: '/store', label: 'Partner Store', icon: <Store size={18} /> },
-            ]
-        },
-        {
-            title: 'Support',
-            items: [
-                { path: '/help', label: 'Concierge Support', icon: <LifeBuoy size={18} /> },
-            ]
-        }
-    ];
-
-    // --- DEFAULT HOME VIEW (Command Centre) ---
-    const HomeView = () => (
-        <div className="home-empty-state">
-            <div className="welcome-container">
-                <div className="icon-wrapper">
-                    <Bus size={48} strokeWidth={1.5} />
-                </div>
-                <h1>{tenant?.company_name || 'Partner'} Command Centre</h1>
-                <p>Welcome to the AyaBus Partner Portal. Select a module from the menu to begin.</p>
-            </div>
+  // ========================================================================
+  // 3. RENDER ENGINE
+  // ========================================================================
+  const renderModule = () => {
+    switch (activeModule) {
+      case 'BUS_CONFIG': return <BusConfigModule />;
+      case 'APPROVALS': return <ApprovalsModule />;
+      case 'ROUTES': return <RoutesModule />;
+      case 'SCHEDULER': return <SchedulerModule />;
+      case 'TREASURY': return <TreasuryModule />;
+      case 'RECONCILIATION': return <ReconciliationModule />;
+      case 'ANALYTICS': return <AnalyticsModule />;
+      case 'PARTNER': return <PartnerModule />;
+      case 'CLIENTS': return <ClientModule />;
+      case 'AUDITOR': return <AuditorModule />;
+      case 'CONTROL': return <ControlCentreModule />;
+      default: return (
+        <div style={{ 
+          display: 'flex', flexDirection: 'column', alignItems: 'center', 
+          justifyContent: 'center', minHeight: '100%', padding: '40px', textAlign: 'center' 
+        }}>
+          <Globe size={48} style={{ marginBottom: '24px', opacity: 0.2, color: 'var(--text-main)' }} />
+          <h1 style={{ fontWeight: '800', fontSize: '28px', color: 'var(--text-main)', margin: '0 0 12px 0' }}>
+            AyaBus Admin Centre
+          </h1>
+          <p style={{ color: 'var(--text-muted)', fontSize: '15px', margin: 0 }}>
+            Open the menu to access operational modules.
+          </p>
         </div>
-    );
+      );
+    }
+  };
 
-    return (
-        <div className="app-layout">
+  return (
+    <div style={{ 
+      height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column', 
+      background: 'var(--bg-canvas)', color: 'var(--text-main)' 
+    }}>
+      
+      {/* --- COMMAND BAR (TOP) --- */}
+      <header style={{ 
+        height: '72px', flexShrink: 0, borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-surface)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px', zIndex: 100
+      }}>
+        {/* Left Side: Brand Identity (NOW CLICKABLE TO RETURN HOME) */}
+        <div 
+          onClick={() => setActiveModule('HOME')}
+          title="Return to Admin Centre"
+          style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' }}
+        >
+          <div style={{ background: 'var(--brand-primary)', padding: '6px', borderRadius: '8px', color: '#FFFFFF', display: 'flex' }}>
+            <Bus size={20} strokeWidth={2.5} />
+          </div>
+          <span style={{ fontWeight: '800', fontSize: '18px', letterSpacing: '-0.5px' }}>
+            AyaBus <span style={{ color: 'var(--brand-primary)' }}>Admin</span>
+          </span>
+        </div>
+
+        {/* Right Side: Theme, Profile, and Hamburger Menu */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+            <button 
+              onClick={toggleTheme} 
+              style={{ background: 'var(--bg-input)', border: '1px solid var(--border-subtle)', color: 'var(--text-main)', cursor: 'pointer', padding: '8px', borderRadius: '50%', display: 'flex' }}
+            >
+              {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
             
-            {/* =========================================
-                1. TOP NAVIGATION BAR
-            ========================================= */}
-            <header className="top-header">
-                {/* LEFT: Branding & Home Link */}
-                <div 
-                    className="brand-container"
-                    onClick={() => {
-                        navigate('/');
-                        setIsMenuOpen(false);
-                    }}
-                >
-                    <div className="logo-box">
-                        <Bus size={20} />
-                    </div>
-                    <div className="brand-text">
-                        <span className="brand-title">AyaBus</span>
-                        <span className="brand-subtitle">Partner Portal</span>
-                    </div>
-                </div>
+            <div style={{ height: '24px', width: '1px', background: 'var(--border-subtle)' }} />
+            
+            <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <div style={{ fontSize: '13px', fontWeight: '800', color: 'var(--text-main)' }}>
+                {user?.name || 'Administrator'}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--brand-primary)', fontWeight: '700' }}>Operations</div>
+            </div>
 
-                {/* RIGHT: Theme Toggle & Hamburger */}
-                <div className="header-actions">
-                    <button 
-                        className="action-btn theme-toggle" 
-                        onClick={toggleTheme}
-                        title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-                    >
-                        {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-                    </button>
-                    <button 
-                        className="action-btn menu-toggle" 
-                        onClick={() => setIsMenuOpen(true)}
-                    >
-                        <Menu size={24} />
-                    </button>
-                </div>
-            </header>
+            <div style={{ height: '24px', width: '1px', background: 'var(--border-subtle)' }} />
 
-            {/* =========================================
-                2. MAIN VIEWPORT (Routing Container)
-            ========================================= */}
-            <main className="main-viewport">
-                <Routes>
-                    <Route path="/" element={<HomeView />} />
-                    <Route path="/manifest" element={<ManifestHub />} />
-                    <Route path="/store/*" element={<PartnerStoreModule />} />
-                    <Route path="/treasury/*" element={<TreasuryModule />} />
-                    {/* 🚀 THE SURGE ENGINE ROUTE */}
-                    <Route path="/surge/*" element={<SurgeModule />} />
-                    {/* 🚀 THE SUPPORT HUB ROUTE */}
-                    <Route path="/help/*" element={<SupportModule />} />
-                    {/* Add future routes here */}
-                </Routes>
-            </main>
-
-            {/* =========================================
-                3. RIGHT-SIDE SLIDING DRAWER MENU
-            ========================================= */}
-            {isMenuOpen && (
-                <div className="drawer-overlay">
-                    {/* Backdrop to click-to-close */}
-                    <div className="drawer-backdrop" onClick={() => setIsMenuOpen(false)} />
-                    
-                    {/* Sliding Panel */}
-                    <aside className="drawer-panel">
-                        {/* Drawer Header */}
-                        <div className="drawer-header">
-                            <div className="user-info">
-                                <span className="user-company">{tenant?.company_name || 'Partner'}</span>
-                                <span className="user-role">Authorized Operator</span>
-                            </div>
-                            <button className="close-btn" onClick={() => setIsMenuOpen(false)}>
-                                <X size={24} />
-                            </button>
-                        </div>
-
-                        {/* Navigation Links */}
-                        <nav className="drawer-nav">
-                            {MENU_CATEGORIES.map((cat, idx) => (
-                                <div key={idx} className="nav-category">
-                                    <div className="category-title">{cat.title}</div>
-                                    {cat.items.map(item => {
-                                        const isActive = location.pathname === item.path || (location.pathname.startsWith(item.path) && item.path !== '/');
-                                        return (
-                                            <button 
-                                                key={item.path}
-                                                className={`nav-item ${isActive ? 'active' : ''}`}
-                                                onClick={() => {
-                                                    navigate(item.path);
-                                                    setIsMenuOpen(false); // Auto-close on navigate
-                                                }}
-                                            >
-                                                {item.icon}
-                                                <span>{item.label}</span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            ))}
-                        </nav>
-
-                        {/* Drawer Footer (Logout) */}
-                        <div className="drawer-footer">
-                            <button className="logout-btn" onClick={logout}>
-                                <LogOut size={18} />
-                                <span>Logout</span>
-                            </button>
-                        </div>
-                    </aside>
-                </div>
-            )}
-
-            {/* =========================================
-                4. COMPONENT CSS
-            ========================================= */}
-            <style>{`
-                .app-layout {
-                    height: 100vh;
-                    width: 100vw;
-                    display: flex;
-                    flex-direction: column;
-                    background: var(--bg-canvas);
-                    overflow: hidden;
-                }
-
-                /* --- TOP HEADER --- */
-                .top-header {
-                    height: 72px;
-                    background: var(--bg-surface);
-                    border-bottom: 1px solid var(--border-subtle);
-                    display: flex;
-                    align-items: center;
-                    justify-content: space-between;
-                    padding: 0 24px;
-                    flex-shrink: 0;
-                    z-index: 100;
-                }
-
-                .brand-container {
-                    display: flex;
-                    align-items: center;
-                    gap: 12px;
-                    cursor: pointer;
-                    user-select: none;
-                    transition: opacity 0.2s;
-                }
-                .brand-container:hover { opacity: 0.8; }
-
-                .logo-box {
-                    width: 40px;
-                    height: 40px;
-                    background: var(--brand-primary);
-                    border-radius: 10px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    color: #FFF;
-                }
-
-                .brand-text {
-                    display: flex;
-                    flex-direction: column;
-                    justify-content: center;
-                }
-
-                .brand-title {
-                    font-size: 18px;
-                    font-weight: 900;
-                    color: var(--text-main);
-                    letter-spacing: -0.5px;
-                    line-height: 1.2;
-                }
-
-                .brand-subtitle {
-                    font-size: 11px;
-                    font-weight: 800;
-                    color: var(--brand-primary);
-                    text-transform: uppercase;
-                    letter-spacing: 1px;
-                    line-height: 1;
-                }
-
-                .header-actions {
-                    display: flex;
-                    align-items: center;
-                    gap: 16px;
-                }
-
-                .action-btn {
-                    background: transparent;
-                    border: 1px solid transparent;
-                    color: var(--text-main);
-                    width: 44px;
-                    height: 44px;
-                    border-radius: 50%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                }
-                .action-btn:hover {
-                    background: var(--bg-input);
-                    border-color: var(--border-subtle);
-                }
-
-                /* --- MAIN VIEWPORT --- */
-                .main-viewport {
-                    flex: 1;
-                    overflow: auto;
-                    position: relative;
-                }
-
-                .home-empty-state {
-                    height: 100%;
-                    width: 100%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 24px;
-                }
-
-                .welcome-container {
-                    text-align: center;
-                    max-width: 400px;
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    gap: 16px;
-                    animation: fadeIn 0.4s ease;
-                }
-
-                .icon-wrapper {
-                    width: 80px;
-                    height: 80px;
-                    background: var(--bg-surface);
-                    border: 1px solid var(--border-subtle);
-                    border-radius: 24px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    color: var(--brand-primary);
-                    margin-bottom: 8px;
-                }
-
-                .welcome-container h1 {
-                    font-size: 24px;
-                    font-weight: 900;
-                    color: var(--text-main);
-                    margin: 0;
-                    letter-spacing: -0.5px;
-                }
-
-                .welcome-container p {
-                    font-size: 14px;
-                    color: var(--text-muted);
-                    margin: 0;
-                    line-height: 1.5;
-                }
-
-                /* --- DRAWER MENU --- */
-                .drawer-overlay {
-                    position: fixed;
-                    top: 0; left: 0; right: 0; bottom: 0;
-                    z-index: 9999;
-                    display: flex;
-                    justify-content: flex-end;
-                }
-
-                .drawer-backdrop {
-                    position: absolute;
-                    inset: 0;
-                    background: rgba(0, 0, 0, 0.4);
-                    backdrop-filter: blur(2px);
-                    animation: fadeIn 0.3s ease;
-                }
-
-                .drawer-panel {
-                    position: relative;
-                    width: 320px;
-                    max-width: 100vw;
-                    height: 100%;
-                    background: var(--bg-surface);
-                    box-shadow: -10px 0 40px rgba(0,0,0,0.1);
-                    display: flex;
-                    flex-direction: column;
-                    animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-                }
-
-                .drawer-header {
-                    padding: 24px;
-                    border-bottom: 1px solid var(--border-subtle);
-                    display: flex;
-                    align-items: flex-start;
-                    justify-content: space-between;
-                }
-
-                .user-info {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 4px;
-                }
-
-                .user-company {
-                    font-size: 16px;
-                    font-weight: 900;
-                    color: var(--text-main);
-                }
-
-                .user-role {
-                    font-size: 12px;
-                    font-weight: 700;
-                    color: var(--text-muted);
-                    text-transform: uppercase;
-                    letter-spacing: 0.5px;
-                }
-
-                .close-btn {
-                    background: var(--bg-input);
-                    border: 1px solid var(--border-subtle);
-                    color: var(--text-main);
-                    width: 36px;
-                    height: 36px;
-                    border-radius: 50%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                }
-                .close-btn:hover {
-                    background: var(--border-strong);
-                    transform: rotate(90deg);
-                }
-
-                .drawer-nav {
-                    flex: 1;
-                    overflow-y: auto;
-                    padding: 24px;
-                }
-
-                .nav-category {
-                    margin-bottom: 32px;
-                }
-
-                .category-title {
-                    font-size: 11px;
-                    font-weight: 900;
-                    color: var(--text-muted);
-                    text-transform: uppercase;
-                    letter-spacing: 1.5px;
-                    margin-bottom: 12px;
-                    padding-left: 12px;
-                }
-
-                .nav-item {
-                    width: 100%;
-                    display: flex;
-                    align-items: center;
-                    gap: 12px;
-                    padding: 12px;
-                    border-radius: 12px;
-                    border: none;
-                    background: transparent;
-                    color: var(--text-main);
-                    font-size: 14px;
-                    font-weight: 600;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                    margin-bottom: 4px;
-                }
-                .nav-item:hover {
-                    background: var(--bg-input);
-                }
-                .nav-item.active {
-                    background: rgba(206, 172, 92, 0.1);
-                    color: var(--brand-primary);
-                    font-weight: 800;
-                }
-
-                .drawer-footer {
-                    padding: 24px;
-                    border-top: 1px solid var(--border-subtle);
-                    background: var(--bg-input);
-                }
-
-                .logout-btn {
-                    width: 100%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 10px;
-                    padding: 14px;
-                    border-radius: 10px;
-                    border: none;
-                    background: rgba(239, 68, 68, 0.1);
-                    color: var(--status-error);
-                    font-size: 14px;
-                    font-weight: 800;
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                }
-                .logout-btn:hover {
-                    background: rgba(239, 68, 68, 0.15);
-                    transform: translateY(-1px);
-                }
-
-                /* --- ANIMATIONS --- */
-                @keyframes fadeIn {
-                    from { opacity: 0; }
-                    to { opacity: 1; }
-                }
-                @keyframes slideInRight {
-                    from { transform: translateX(100%); }
-                    to { transform: translateX(0); }
-                }
-
-                /* Scrollbar overrides for drawer */
-                .drawer-nav::-webkit-scrollbar { width: 4px; }
-                .drawer-nav::-webkit-scrollbar-track { background: transparent; }
-                .drawer-nav::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; }
-            `}</style>
+            {/* Hamburger Menu Button (Top Right) */}
+            <button 
+              onClick={() => setIsDrawerOpen(true)}
+              style={{ 
+                background: 'var(--brand-primary)', border: 'none', color: '#FFFFFF', 
+                padding: '10px', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center',
+                boxShadow: '0 2px 8px rgba(206, 172, 92, 0.2)'
+              }}
+            >
+              <Menu size={20} strokeWidth={2.5} />
+            </button>
         </div>
-    );
+      </header>
+
+      {/* --- DYNAMIC VIEWPORT (Fully Adaptive and Scrollable) --- */}
+      <main style={{ 
+        flex: 1, 
+        overflow: 'auto', /* This guarantees ANY module content will scroll natively if it overflows */
+        position: 'relative',
+        display: 'block'
+      }}>
+        {renderModule()}
+      </main>
+
+      {/* --- COMMAND DRAWER (OVERLAY FROM RIGHT) --- */}
+      {isDrawerOpen && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}>
+          {/* Backdrop */}
+          <div 
+            onClick={() => setIsDrawerOpen(false)}
+            style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(2px)' }} 
+          />
+          
+          {/* Drawer Panel (Anchored to Right) */}
+          <div style={{ 
+            width: '320px', background: 'var(--bg-surface)', height: '100%', position: 'relative',
+            borderLeft: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column',
+            boxShadow: '-10px 0 30px rgba(0,0,0,0.1)', animation: 'slideInRight 0.2s ease-out'
+          }}>
+            {/* Drawer Header */}
+            <div style={{ 
+              padding: '24px', borderBottom: '1px solid var(--border-subtle)', 
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between' 
+            }}>
+              <span style={{ fontWeight: '800', fontSize: '16px' }}>Module Registry</span>
+              <button 
+                onClick={() => setIsDrawerOpen(false)} 
+                style={{ background: 'var(--bg-input)', border: 'none', color: 'var(--text-main)', cursor: 'pointer', padding: '6px', borderRadius: '6px' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Drawer Navigation List */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+              
+              <button
+                onClick={() => { setActiveModule('HOME'); setIsDrawerOpen(false); }}
+                style={{ 
+                  width: '100%', padding: '12px 16px', borderRadius: '8px', border: 'none', 
+                  background: activeModule === 'HOME' ? 'var(--brand-primary)' : 'transparent',
+                  color: activeModule === 'HOME' ? '#FFFFFF' : 'var(--text-main)',
+                  display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px',
+                  cursor: 'pointer', transition: 'all 0.2s', fontWeight: activeModule === 'HOME' ? '800' : '600'
+                }}
+              >
+                <Home size={18} />
+                <span>Admin Centre</span>
+              </button>
+
+              {MENU_CATEGORIES.map((category, catIdx) => (
+                <div key={catIdx} style={{ marginBottom: '24px' }}>
+                  <div style={{ 
+                    fontSize: '11px', fontWeight: '800', color: 'var(--text-muted)', 
+                    textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px', paddingLeft: '8px' 
+                  }}>
+                    {category.title}
+                  </div>
+                  
+                  {category.items.map((mod) => {
+                    const isActive = activeModule === mod.id;
+                    return (
+                      <button
+                        key={mod.id}
+                        onClick={() => { setActiveModule(mod.id); setIsDrawerOpen(false); }}
+                        style={{ 
+                          width: '100%', padding: '12px 16px', borderRadius: '8px', border: 'none', 
+                          background: isActive ? 'var(--brand-primary)' : 'transparent',
+                          color: isActive ? '#FFFFFF' : 'var(--text-main)', /* Strict White Text when active */
+                          display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px',
+                          cursor: 'pointer', transition: 'all 0.2s', fontWeight: isActive ? '800' : '600'
+                        }}
+                      >
+                        <div style={{ opacity: isActive ? 1 : 0.7 }}>{mod.icon}</div>
+                        <span>{mod.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+
+            {/* Drawer Footer */}
+            <div style={{ padding: '24px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-canvas)' }}>
+              <button 
+                onClick={onLogout}
+                style={{ 
+                  width: '100%', padding: '14px', borderRadius: '8px', 
+                  background: 'rgba(220, 38, 38, 0.1)', border: 'none', 
+                  color: 'var(--status-error)', cursor: 'pointer', display: 'flex', 
+                  alignItems: 'center', justifyContent: 'center', gap: '10px', 
+                  fontWeight: '800', fontSize: '14px', transition: 'all 0.2s'
+                }}
+              >
+                <LogOut size={18} />
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes slideInRight { 
+          from { transform: translateX(100%); } 
+          to { transform: translateX(0); } 
+        }
+      `}</style>
+    </div>
+  );
 };
 
 export default HomePage;
