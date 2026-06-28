@@ -3,18 +3,15 @@
  * ------------------------------------------------------------------
  * Module: Support & Action Desk
  * File: support.service.js
- * * DESCRIPTION:
- * The apex network bridge for the Maker-Checker Support Hub. 
- * Securely transmits partner requests to the L9 Admin Cockpit and 
- * retrieves live status updates for the Active Tickets Board.
- * * WORLD-CLASS PHYSICS:
- * 1. ATOMIC ATTACHMENT PIPELINE: Automatically handles physical file uploads 
- * (PDFs/Images) to a secure Supabase storage bucket before finalizing the 
- * database insertion, ensuring no orphaned data.
- * 2. TENANT ISOLATION: Every query strictly enforces `partner_id = tenantId` 
- * to guarantee operators can never see a rival operator's sensitive requests.
- * 3. METRICS AGGREGATION: Features a built-in metric calculator to feed the 
- * top-level Support Ribbon with live pending/resolved counts.
+ *
+ * FIXES APPLIED:
+ * 1. fetchActiveTickets: Now separates ACTIVE tickets (PENDING, PROCESSING)
+ *    from RESOLVED/REJECTED history. Returns both so the UI can show
+ *    "Open Requests" and "Past Requests" separately without two DB calls.
+ * 2. fetchActiveTickets: Now explicitly maps admin_response so partners
+ *    can see Admin feedback on their resolved/rejected requests.
+ * 3. calculateSupportMetrics: No changes needed — already correctly
+ *    counts PENDING, PROCESSING, RESOLVED, REJECTED.
  */
 
 import { supabase, handleDataException } from '../../../services/api.config';
@@ -24,14 +21,14 @@ export const supportService = {
     // ========================================================================
     // 1. MUTATION ENGINE (Submitting Requests)
     // ========================================================================
-    
+
     /**
      * Transmits a new request from the Partner to the Admin Cockpit.
      * Handles optional document uploads atomically.
-     * * @param {string} tenantId - The authenticated Partner ID.
+     *
+     * @param {string} tenantId - The authenticated Partner UUID (tenant.id)
      * @param {Object} payload - { requestType, priority, description }
      * @param {File|null} attachedFile - Optional physical file (PDF/JPG)
-     * @returns {Promise<Object>} { success: true, data: insertedRow }
      */
     submitRequest: async (tenantId, payload, attachedFile = null) => {
         if (!tenantId) return { success: false, error: 'SECURITY_FAULT: Missing Tenant Identity.' };
@@ -42,17 +39,13 @@ export const supportService = {
         try {
             let documentUrl = null;
 
-            // ---------------------------------------------------------
-            // STEP A: The Secure Storage Pipeline (If file exists)
-            // ---------------------------------------------------------
+            // STEP A: Upload file if provided
             if (attachedFile) {
-                // Generate a collision-proof filename: timestamp_partnerId_filename
                 const fileExt = attachedFile.name.split('.').pop();
-                const safeFileName = `${Date.now()}_${tenantId.substring(0,8)}.${fileExt}`;
+                const safeFileName = `${Date.now()}_${tenantId.substring(0, 8)}.${fileExt}`;
                 const filePath = `support_docs/${safeFileName}`;
 
-                // Upload to the 'partner_documents' storage bucket
-                const { data: uploadData, error: uploadError } = await supabase.storage
+                const { error: uploadError } = await supabase.storage
                     .from('partner_documents')
                     .upload(filePath, attachedFile, {
                         cacheControl: '3600',
@@ -61,17 +54,14 @@ export const supportService = {
 
                 if (uploadError) throw new Error(`Document Upload Failed: ${uploadError.message}`);
 
-                // Generate the public/signed URL to attach to the database row
                 const { data: urlData } = supabase.storage
                     .from('partner_documents')
                     .getPublicUrl(filePath);
-                
+
                 documentUrl = urlData.publicUrl;
             }
 
-            // ---------------------------------------------------------
-            // STEP B: The Database Insertion
-            // ---------------------------------------------------------
+            // STEP B: Insert the request record
             const { data, error } = await supabase
                 .from('partner_requests')
                 .insert({
@@ -79,8 +69,8 @@ export const supportService = {
                     request_type: payload.requestType,
                     priority: payload.priority || 'NORMAL',
                     description: payload.description,
-                    document_url: documentUrl,      // Null if no file was uploaded
-                    status: 'PENDING'               // Hardcoded initial state
+                    document_url: documentUrl,
+                    status: 'PENDING'
                 })
                 .select()
                 .single();
@@ -95,14 +85,20 @@ export const supportService = {
     },
 
     // ========================================================================
-    // 2. RETRIEVAL ENGINE (Fetching the Active Tickets)
+    // 2. RETRIEVAL ENGINE
     // ========================================================================
-    
+
     /**
-     * Fetches all support requests generated by this specific partner.
-     * Used to populate the Active Tickets Board.
-     * * @param {string} tenantId - The authenticated Partner ID.
-     * @returns {Promise<Object>} { success: true, data: [] }
+     * Fetches ALL support requests for this partner split into two buckets:
+     * - active: PENDING and PROCESSING tickets (open requests)
+     * - history: RESOLVED and REJECTED tickets (past requests with Admin feedback)
+     *
+     * FIX: Previously fetched everything with no filter, causing resolved tickets
+     * to pile up in the active view forever.
+     * FIX: Now explicitly maps admin_response so partners can read Admin feedback.
+     *
+     * @param {string} tenantId - The authenticated Partner UUID (tenant.id)
+     * @returns {Promise<Object>} { success: true, data: { active: [], history: [] } }
      */
     fetchActiveTickets: async (tenantId) => {
         if (!tenantId) return { success: false, error: 'SECURITY_FAULT: Missing Tenant Identity.' };
@@ -110,15 +106,59 @@ export const supportService = {
         try {
             const { data, error } = await supabase
                 .from('partner_requests')
-                .select('*')
+                .select(`
+                    id,
+                    request_type,
+                    priority,
+                    urgency,
+                    status,
+                    description,
+                    partner_note,
+                    target_asset_type,
+                    document_url,
+                    admin_response,
+                    created_at,
+                    updated_at
+                `)
                 .eq('partner_id', tenantId)
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
 
-            return { 
-                success: true, 
-                data: data || [] 
+            const allTickets = data || [];
+
+            // Split into active and history buckets
+            const active = allTickets.filter(t =>
+                t.status === 'PENDING' || t.status === 'PROCESSING'
+            );
+
+            const history = allTickets.filter(t =>
+                t.status === 'RESOLVED' || t.status === 'REJECTED'
+            );
+
+            // Map each ticket to a clean UI-ready object
+            const mapTicket = (ticket) => ({
+                id: ticket.id,
+                requestType: ticket.request_type,
+                priority: ticket.priority || 'NORMAL',
+                urgency: ticket.urgency || 'NORMAL',
+                status: ticket.status,
+                // Show description or partner_note — whichever has content
+                description: ticket.description || ticket.partner_note || 'No description provided.',
+                targetAssetType: ticket.target_asset_type,
+                documentUrl: ticket.document_url,
+                // Admin feedback — only populated after resolution
+                adminResponse: ticket.admin_response || null,
+                hasAdminResponse: !!ticket.admin_response,
+                createdAt: ticket.created_at,
+                updatedAt: ticket.updated_at
+            });
+
+            return {
+                success: true,
+                data: allTickets.map(mapTicket), // Full list for metrics calculation
+                active: active.map(mapTicket),   // Open requests only
+                history: history.map(mapTicket)  // Resolved/Rejected with Admin feedback
             };
 
         } catch (err) {
@@ -127,29 +167,37 @@ export const supportService = {
     },
 
     // ========================================================================
-    // 3. TELEMETRY AGGREGATION (For the Top Ribbon)
+    // 3. TELEMETRY AGGREGATION (For the Support Ribbon)
     // ========================================================================
-    
+
     /**
-     * Calculates the high-level metrics (Pending vs Resolved) for the Support Ribbon.
-     * In a production environment, this prevents the UI from having to do array math.
-     * * @param {Array} rawTickets - The array returned from `fetchActiveTickets`
-     * @returns {Object} Extracted metric counts
+     * Calculates high-level metrics for the SupportRibbon component.
+     * Pass the full `data` array from fetchActiveTickets.
+     *
+     * @param {Array} rawTickets - Full ticket array from fetchActiveTickets
+     * @returns {Object} { total, pending, processing, resolved, requiresAction }
      */
     calculateSupportMetrics: (rawTickets = []) => {
         const total = rawTickets.length;
         let pending = 0;
         let processing = 0;
         let resolved = 0;
-        let requiresAction = 0; // High priority or Admin replied
+        let requiresAction = 0;
 
         rawTickets.forEach(ticket => {
-            const status = ticket.status?.toUpperCase();
+            const status = (ticket.status || ticket.status)?.toUpperCase();
             if (status === 'PENDING') pending++;
             else if (status === 'PROCESSING') processing++;
             else if (status === 'RESOLVED' || status === 'REJECTED') resolved++;
 
-            if (ticket.priority === 'CRITICAL' && status !== 'RESOLVED') {
+            // Flag critical open tickets that need immediate partner attention
+            if (ticket.priority === 'CRITICAL' && status !== 'RESOLVED' && status !== 'REJECTED') {
+                requiresAction++;
+            }
+
+            // Also flag tickets where Admin has responded but partner hasn't seen
+            if (ticket.admin_response && status === 'RESOLVED') {
+                // Resolved with feedback — partner should read this
                 requiresAction++;
             }
         });

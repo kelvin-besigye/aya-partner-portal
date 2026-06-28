@@ -3,23 +3,19 @@
  * ------------------------------------------------------------------
  * Module: Partner Store / Layout
  * File: StoreInspectorDock.jsx
- * * DESCRIPTION:
- * The Deep-Inspector Panel. Morphs dynamically based on the `assetType` 
- * (Fleet, Routes, Timetable) to display deep relational telemetry.
- * * WORLD-CLASS PHYSICS:
- * 1. POLYMORPHIC ENGINE: A single component that intelligent switches its 
- * rendering logic based on the asset's structural DNA.
- * 2. KINETIC SLIDE-OVER: On desktop, it docks to the right. On mobile, 
- * it fluidly scales into a full-screen takeover to prevent horizontal squish.
- * 3. STICKY COMMAND FOOTER: The "Request Modification" button is permanently 
- * anchored to the bottom of the viewport, ensuring the "Controlled Write" 
- * trigger is always accessible regardless of scroll depth.
+ * Goes to: apps/partner-portal/src/modules/store/components/layout/StoreInspectorDock.jsx
+ *
+ * CHANGES IN THIS VERSION:
+ * - Removed selectedAsset.plateNumber from header title (column dropped from DB).
+ *   Fleet assets now display busClass + layoutDisplay as their identifier.
+ * - Changed asset.layoutConfig → asset.layoutDisplay (fixed adapter field name).
+ * - All other field names verified against store.adapters.js fixed output.
  */
 
 import React from 'react';
-import { 
-    X, Bus, Map, CalendarClock, ShieldCheck, 
-    Armchair, Coffee, FileEdit, AlertTriangle, 
+import {
+    X, Bus, Map, CalendarClock, ShieldCheck,
+    Armchair, Coffee, FileEdit, AlertTriangle,
     Navigation, MapPin, Clock, Banknote, Image as ImageIcon
 } from 'lucide-react';
 import StoreAssetBadge from '../interactive/StoreAssetBadge';
@@ -41,10 +37,10 @@ const getCoverImage = (galleryArray) => {
 // ========================================================================
 // 2. MAIN COMPONENT
 // ========================================================================
-const StoreInspectorDock = ({ 
-    selectedAsset, 
-    onClose, 
-    onRequestChange 
+const StoreInspectorDock = ({
+    selectedAsset,
+    onClose,
+    onRequestChange
 }) => {
 
     // --- IDLE STATE (Empty Dock) ---
@@ -60,10 +56,13 @@ const StoreInspectorDock = ({
         );
     }
 
-    // --- POLYMORPHIC RENDERING ENGINES ---
+    // ========================================================================
+    // 3. POLYMORPHIC RENDERING ENGINES
+    // ========================================================================
 
     /**
      * Renders physical bus data (Gallery, Amenities, Specs)
+     * Fields from store.adapters.js: busClass, layoutDisplay, amenities, gallery
      */
     const renderFleetDetails = (asset) => {
         const coverImage = getCoverImage(asset.gallery);
@@ -90,11 +89,12 @@ const StoreInspectorDock = ({
                     <div className="data-grid">
                         <div className="data-card">
                             <span className="card-label">Hardware Class</span>
-                            <span className="card-val">{asset.busClass}</span>
+                            <span className="card-val">{asset.busClass || '—'}</span>
                         </div>
                         <div className="data-card">
                             <span className="card-label">Layout Config</span>
-                            <div className="card-val-icon"><Armchair size={14}/> {asset.layoutConfig}</div>
+                            {/* FIX: was asset.layoutConfig — adapters now return layoutDisplay */}
+                            <div className="card-val-icon"><Armchair size={14}/> {asset.layoutDisplay || '—'}</div>
                         </div>
                     </div>
                 </div>
@@ -119,6 +119,8 @@ const StoreInspectorDock = ({
 
     /**
      * Renders geographical and financial vectors
+     * Fields: originCity, departurePark, durationText, destinationCity,
+     *         priceTicket, priceTax, totalFare, assignedFleetClass, assignedLayout
      */
     const renderRouteDetails = (asset) => (
         <div className="inspector-polymorph-body">
@@ -183,6 +185,8 @@ const StoreInspectorDock = ({
 
     /**
      * Renders temporal and automation rules
+     * Fields: humanFrequency, departureTimeFormatted, routeCode, busClass,
+     *         originCity, destinationCity
      */
     const renderTimetableDetails = (asset) => (
         <div className="inspector-polymorph-body">
@@ -214,17 +218,36 @@ const StoreInspectorDock = ({
             <div className="data-section">
                 <h4 className="section-label">Geographical Summary</h4>
                 <div className="info-panel">
-                    This automation executes the corridor from <strong>{asset.originCity}</strong> to <strong>{asset.destinationCity}</strong>. 
+                    This automation executes the corridor from <strong>{asset.originCity}</strong> to <strong>{asset.destinationCity}</strong>.
                     Any modifications to the base Route Pricing will automatically apply to this schedule.
                 </div>
             </div>
         </div>
     );
 
+    // ========================================================================
+    // 4. HEADER TITLE RESOLVER
+    // ========================================================================
+    /**
+     * FIX: plateNumber is dropped from the DB schema.
+     * Fleet assets now show busClass + layoutDisplay as their primary identifier.
+     * Routes show routeCode. Timetable shows humanFrequency.
+     */
+    const resolveHeaderTitle = (asset) => {
+        if (asset.assetType === 'FLEET') {
+            return asset.busClass
+                ? `${asset.busClass} — ${asset.layoutDisplay || 'Config'}`
+                : 'Fleet Asset';
+        }
+        if (asset.assetType === 'ROUTES') return asset.routeCode || 'Route Blueprint';
+        if (asset.assetType === 'TIMETABLE') return asset.humanFrequency || 'Automation Rule';
+        return 'Asset Dossier';
+    };
+
     // --- MASTER RENDERER ---
     return (
         <div className="inspector-chassis">
-            
+
             {/* MASTER HEADER */}
             <header className="inspector-header">
                 <div className="header-top">
@@ -234,9 +257,7 @@ const StoreInspectorDock = ({
                             {selectedAsset.assetType === 'ROUTES' && 'Route Blueprint'}
                             {selectedAsset.assetType === 'TIMETABLE' && 'Automation Rule'}
                         </span>
-                        <h2>
-                            {selectedAsset.plateNumber || selectedAsset.routeCode || selectedAsset.humanFrequency}
-                        </h2>
+                        <h2>{resolveHeaderTitle(selectedAsset)}</h2>
                     </div>
                     <button className="inspector-close-btn" onClick={onClose} title="Close Inspector">
                         <X size={20} />
@@ -244,7 +265,7 @@ const StoreInspectorDock = ({
                 </div>
                 <div className="header-bottom">
                     <StoreAssetBadge status={selectedAsset.status} size="sm" />
-                    <span className="system-id">ID: {selectedAsset.id.split('-')[0]}...</span>
+                    <span className="system-id">ID: {selectedAsset.id?.split('-')[0]}...</span>
                 </div>
             </header>
 
@@ -261,7 +282,7 @@ const StoreInspectorDock = ({
                     <ShieldCheck size={12} className="shield-icon" />
                     <span>Live edits are disabled to protect active ticket sales.</span>
                 </div>
-                <button 
+                <button
                     className="request-modification-btn"
                     onClick={() => onRequestChange(selectedAsset.assetType, selectedAsset)}
                 >
@@ -300,7 +321,7 @@ const StoreInspectorDock = ({
                 }
                 .header-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
                 .asset-type-label { display: block; font-size: 10px; font-weight: 800; color: var(--brand-primary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-                .header-titles h2 { margin: 0; font-size: 22px; font-weight: 900; color: var(--text-main); line-height: 1.2; }
+                .header-titles h2 { margin: 0; font-size: 20px; font-weight: 900; color: var(--text-main); line-height: 1.2; }
                 .inspector-close-btn { background: var(--bg-input); border: none; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--text-main); cursor: pointer; transition: all 0.2s; }
                 .inspector-close-btn:hover { background: var(--border-strong); transform: rotate(90deg); }
                 .header-bottom { display: flex; justify-content: space-between; align-items: center; }
@@ -315,6 +336,7 @@ const StoreInspectorDock = ({
                 .inspector-viewport::-webkit-scrollbar { width: 4px; }
                 .inspector-viewport::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
 
+                .inspector-polymorph-body { display: flex; flex-direction: column; gap: 24px; }
                 .data-section { display: flex; flex-direction: column; gap: 12px; }
                 .section-label { margin: 0; font-size: 11px; font-weight: 800; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 
@@ -331,7 +353,7 @@ const StoreInspectorDock = ({
                 .inspector-hero-image img { width: 100%; height: 100%; object-fit: cover; }
                 .gallery-count-badge { position: absolute; bottom: 12px; right: 12px; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); color: #fff; padding: 6px 10px; border-radius: 100px; font-size: 11px; font-weight: 800; display: flex; align-items: center; gap: 4px; border: 1px solid rgba(255,255,255,0.2); }
                 .inspector-hero-placeholder { width: 100%; height: 160px; background: var(--bg-input); border-radius: 12px; border: 1px dashed var(--border-strong); display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-muted); gap: 12px; font-size: 12px; font-weight: 700; text-transform: uppercase; }
-                
+
                 .amenity-tags { display: flex; flex-wrap: wrap; gap: 8px; }
                 .amenity-tag { padding: 6px 12px; background: rgba(206, 172, 92, 0.1); border: 1px solid rgba(206, 172, 92, 0.2); border-radius: 100px; color: var(--brand-primary); font-size: 11px; font-weight: 800; display: flex; align-items: center; gap: 6px; text-transform: capitalize; }
                 .empty-sub-state { font-size: 12px; color: var(--text-muted); font-style: italic; padding: 12px; background: var(--bg-input); border-radius: 8px; }
@@ -372,7 +394,6 @@ const StoreInspectorDock = ({
                 @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
 
                 @media (max-width: 1024px) {
-                    /* On mobile/tablet, it becomes a fixed fullscreen overlay sliding over the list */
                     .inspector-chassis, .inspector-idle-state {
                         position: fixed; top: 0; right: 0; bottom: 0;
                         width: 100%; max-width: 450px;

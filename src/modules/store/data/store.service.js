@@ -3,25 +3,25 @@
  * ------------------------------------------------------------------
  * Module: Partner Store / Data Layer
  * File: store.service.js
- * * DESCRIPTION:
- * The apex network bridge for the Partner Store. Fetches pristine data 
- * across the 4 asset pillars and executes the "Controlled Write" physics 
- * for modification requests.
- * * WORLD-CLASS PHYSICS:
- * 1. THE CONTROLLED WRITE: Partners cannot mutate live database rows. All changes 
- * are packaged as JSON payloads and pushed to the Admin 'partner_requests' queue.
- * 2. ATOMIC STATE LOCKING: When a request is submitted, the asset's status is 
- * immediately transitioned to 'UPDATE_PENDING' to prevent duplicate requests.
- * 3. ADAPTER PIPELINE: All raw SQL returns are instantly passed through 
- * `store.adapters.js` to guarantee UI crash immunity.
+ *
+ * FIXES APPLIED:
+ * 1. fetchCorporateIdentity: Changed .eq('partner_id', tenantId) to .eq('id', tenantId)
+ *    because tenantId from AuthContext is the UUID primary key, not the text code.
+ * 2. fetchCorporateIdentity: Now joins partner_parks, partner_financials, partner_contacts
+ *    so the Corporate Identity tab actually shows parks, financials and contacts.
+ * 3. fetchFleetRegistry: Already correct (partner_id FK is UUID) — no change needed.
+ * 4. fetchMasterTimetable: Fixed the filter — Supabase does not support
+ *    .eq('routes.partner_id') on joined tables. Now fetches by route IDs instead.
+ * 5. submitChangeRequest: Changed status from 'PENDING_REVIEW' to 'PENDING'
+ *    to match the actual DB column default.
  */
 
 import { supabase, handleDataException } from '../../../services/api.config';
-import { 
-    adaptCorporateProfile, 
-    adaptFleetAsset, 
-    adaptRouteBlueprint, 
-    adaptMasterTimetable 
+import {
+    adaptCorporateProfile,
+    adaptFleetAsset,
+    adaptRouteBlueprint,
+    adaptMasterTimetable
 } from './store.adapters';
 import { STORE_ASSET_TYPES } from './store.dictionary';
 
@@ -33,15 +33,24 @@ export const storeService = {
 
     /**
      * PILLAR 1: Corporate Identity
-     * Fetches the root Partner profile including TIN and JSONB financial splits.
+     * Fetches the root Partner profile including TIN, parks, financials and contacts.
+     *
+     * FIX: Query uses .eq('id', tenantId) — tenantId is the UUID primary key.
+     * The 'partner_id' column is a human-readable text code (e.g. "ENTX"), not the UUID.
+     * Also now joins the three child tables so they hydrate correctly in the UI.
      */
     fetchCorporateIdentity: async (tenantId) => {
         if (!tenantId) return { success: false, error: 'IDENTITY_LOCK_MISSING' };
         try {
             const { data, error } = await supabase
                 .from('partners')
-                .select('*')
-                .eq('partner_id', tenantId)
+                .select(`
+                    *,
+                    partner_parks (*),
+                    partner_financials (*),
+                    partner_contacts (*)
+                `)
+                .eq('id', tenantId)  // FIX: was .eq('partner_id', tenantId)
                 .single();
 
             if (error) throw error;
@@ -53,7 +62,8 @@ export const storeService = {
 
     /**
      * PILLAR 2: Fleet Registry
-     * Fetches the physical bus configurations and layouts.
+     * Fetches bus configurations for this partner.
+     * Correct as-is — partner_id on bus_configs is the UUID FK to partners.id
      */
     fetchFleetRegistry: async (tenantId) => {
         if (!tenantId) return { success: false, error: 'IDENTITY_LOCK_MISSING' };
@@ -74,7 +84,8 @@ export const storeService = {
 
     /**
      * PILLAR 3: Route Network
-     * Fetches the geographic corridors and ticket pricing, joined with assigned fleets.
+     * Fetches routes with their assigned bus config joined in.
+     * Correct as-is — partner_id on routes is the UUID FK to partners.id
      */
     fetchRouteNetwork: async (tenantId) => {
         if (!tenantId) return { success: false, error: 'IDENTITY_LOCK_MISSING' };
@@ -98,21 +109,41 @@ export const storeService = {
 
     /**
      * PILLAR 4: Master Timetable
-     * Fetches the automated dispatch schedules (Deep relational join).
+     * Fetches automated dispatch schedules with deep relational join.
+     *
+     * FIX: Supabase does not support .eq('routes.partner_id', tenantId) on joined tables.
+     * Instead we first fetch the partner's route IDs, then filter schedules by those IDs.
+     * This is a two-step approach but is reliable and crash-proof.
      */
     fetchMasterTimetable: async (tenantId) => {
         if (!tenantId) return { success: false, error: 'IDENTITY_LOCK_MISSING' };
         try {
+            // STEP 1: Get this partner's route IDs
+            const { data: routeData, error: routeError } = await supabase
+                .from('routes')
+                .select('id')
+                .eq('partner_id', tenantId);
+
+            if (routeError) throw routeError;
+
+            // If partner has no routes yet, return empty gracefully
+            if (!routeData || routeData.length === 0) {
+                return { success: true, data: [] };
+            }
+
+            const routeIds = routeData.map(r => r.id);
+
+            // STEP 2: Fetch schedules for those routes with full join
             const { data, error } = await supabase
                 .from('route_schedules')
                 .select(`
                     *,
-                    routes!inner (
+                    routes (
                         *,
                         bus_configs (*)
                     )
                 `)
-                .eq('routes.partner_id', tenantId)
+                .in('route_id', routeIds)
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
@@ -128,31 +159,24 @@ export const storeService = {
     // ========================================================================
 
     /**
-     * Submits a Change Request to the Admin Cockpit instead of directly mutating 
-     * the live database. Also locks the local asset by setting it to 'UPDATE_PENDING'.
-     * * @param {Object} payload 
-     * @param {string} payload.tenantId - The Partner ID making the request
-     * @param {string} payload.requestType - e.g., 'LAYOUT_MODIFICATION'
-     * @param {string} payload.assetType - 'FLEET', 'ROUTES', 'TIMETABLE', 'CORPORATE'
-     * @param {string} payload.assetId - The UUID of the item being changed
-     * @param {Object} payload.requestedChanges - JSON blob of what they want changed
-     * @param {string} payload.partnerNote - Text note explaining the \"Why\"
+     * Submits a Change Request to the Admin Cockpit's partner_requests queue.
+     * Also locks the local asset by transitioning it to 'UPDATE_PENDING'.
+     *
+     * FIX: status changed from 'PENDING_REVIEW' to 'PENDING' to match DB column default.
      */
-    submitChangeRequest: async ({ 
-        tenantId, requestType, assetType, assetId, requestedChanges, partnerNote 
+    submitChangeRequest: async ({
+        tenantId, requestType, assetType, assetId, requestedChanges, partnerNote
     }) => {
         try {
-            // -------------------------------------------------------------
-            // STEP 1: Route the request to the Admin Cockpit's Inbox
-            // -------------------------------------------------------------
+            // STEP 1: Insert into the Admin's request queue
             const requestTicket = {
                 partner_id: tenantId,
                 request_type: requestType,
                 target_asset_type: assetType,
                 target_asset_id: assetId,
-                requested_changes: requestedChanges, // JSONB Payload
+                requested_changes: requestedChanges,
                 partner_note: partnerNote,
-                status: 'PENDING_REVIEW',
+                status: 'PENDING',  // FIX: was 'PENDING_REVIEW', DB expects 'PENDING'
                 created_at: new Date().toISOString()
             };
 
@@ -162,10 +186,7 @@ export const storeService = {
 
             if (insertError) throw insertError;
 
-            // -------------------------------------------------------------
-            // STEP 2: Lock the Local Asset (Transition to UPDATE_PENDING)
-            // -------------------------------------------------------------
-            // We must map the abstract assetType to the exact physical Postgres table
+            // STEP 2: Lock the asset locally (visual feedback for the partner)
             const tableMap = {
                 [STORE_ASSET_TYPES.CORPORATE.id]: 'partners',
                 [STORE_ASSET_TYPES.FLEET.id]: 'bus_configs',
@@ -174,7 +195,7 @@ export const storeService = {
             };
 
             const targetTable = tableMap[assetType];
-            
+
             if (targetTable) {
                 const { error: updateError } = await supabase
                     .from(targetTable)
@@ -182,15 +203,15 @@ export const storeService = {
                     .eq('id', assetId);
 
                 if (updateError) {
-                    console.warn(`[AyaBus Telemetry] Request filed, but failed to lock local asset ${assetId}:`, updateError);
-                    // We don't throw here because the Admin request was successful. 
-                    // The asset lock is purely visual for the partner.
+                    // Don't throw — the request was filed successfully.
+                    // The lock is purely visual.
+                    console.warn(`[AyaBus Telemetry] Request filed, but failed to lock asset ${assetId}:`, updateError);
                 }
             }
 
-            return { 
-                success: true, 
-                message: 'Modification request transmitted securely to the Admin Citadel.' 
+            return {
+                success: true,
+                message: 'Modification request transmitted securely to the Admin Citadel.'
             };
 
         } catch (err) {

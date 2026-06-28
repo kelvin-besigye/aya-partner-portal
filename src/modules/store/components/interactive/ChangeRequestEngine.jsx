@@ -3,7 +3,9 @@
  * ------------------------------------------------------------------
  * Module: Partner Store / Interactive
  * File: ChangeRequestEngine.jsx
- * * STATUS: DE-POISONED & HOOK-STABILIZED
+ *
+ * FIX: Success message updated to say "Pending" instead of 
+ * "Pending Review" to match the actual DB status value.
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
@@ -53,12 +55,12 @@ const ChangeRequestEngine = ({
     }, [isOpen]);
 
     // ========================================================================
-    // 3. CONTEXTUAL INTELLIGENCE (Hooks must be before return null)
+    // 3. CONTEXTUAL INTELLIGENCE
     // ========================================================================
     const filteredTypes = useMemo(() => {
         if (!asset?.assetType) return [];
         return CHANGE_REQUEST_TYPES.filter(type => type.targetAsset === asset.assetType);
-    }, [asset?.assetType]); // Dependency optimized for stability
+    }, [asset?.assetType]);
 
     // ========================================================================
     // 4. THE SECURE TRANSMISSION
@@ -120,7 +122,8 @@ const ChangeRequestEngine = ({
                             <BadgeCheck size={64} color="var(--status-success)" />
                         </div>
                         <h3>Request Logged Successfully</h3>
-                        <p>The Admin Citadel has received your proposal. This asset is now under "Pending Review" status.</p>
+                        {/* FIX: was "Pending Review" — actual DB status is "PENDING" */}
+                        <p>The Admin Citadel has received your proposal. This asset is now flagged as <strong>Pending Admin Action</strong>.</p>
                     </div>
                 ) : (
                     <div className="cre-form-viewport">

@@ -1,318 +1,350 @@
-/**
- * 👑 AYABUS MANIFEST HUB (Sovereign Dispatch Engine)
- * ------------------------------------------------------------------
- * Module: Manifest / Components / Interactive
- * File: SeatMatrix.jsx
- * * DESCRIPTION:
- * The interactive digital twin of the physical bus layout. 
- * Reads the strict 4-state SEAT_DICTIONARY to render realtime 
- * financial and dispatch availability.
- * * PHYSICS:
- * Dynamically generates seating grids (2x2, 2x1, etc.).
- * Fully responsive: scales down on small screens, scrolls smoothly 
- * on massive configurations (e.g., 70+ seater buses).
- */
-
 import React, { useMemo } from 'react';
-import { CircleDot, Info, CheckCircle2, AlertTriangle, Armchair } from 'lucide-react';
+import { CircleDot, Info, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { SEAT_STATES, SEAT_DICTIONARY } from '../../data/seat.dictionary';
 
-// ========================================================================
-// HELPER PHYSICS: BUS GRID GENERATOR
-// ========================================================================
 /**
- * Real-world buses don't have perfect grids. This intelligent engine 
- * generates a structured array representing physical seat locations.
+ * SEAT MATRIX (Partner Portal — Dispatch Engine)
+ * ------------------------------------------------------------------
+ * Ported to the PROVEN v2 buildChassisRows algorithm. Identical signature
+ * to Admin ChassisCanvas.jsx — same source of truth, same layout_config.
+ *
+ * The booking-state layering via SEAT_DICTIONARY is preserved — each
+ * bookable slot's label (e.g. '1A', 'M', 'SS1') is used as the key into
+ * schedule.seat_matrix_state to look up its current status.
+ *
+ * v2 fields read: driver_position, entrance_side, entrance_row,
+ *                 bench_position, conductor_count, has_invalid_seat
  */
-const generateBusChassis = (capacity = 60, layoutType = '2x2') => {
-    let leftSide = 2;
-    let rightSide = 2;
 
-    if (layoutType === '2x1') { leftSide = 2; rightSide = 1; }
-    if (layoutType === '1x2') { leftSide = 1; rightSide = 2; }
-    if (layoutType === '1x1') { leftSide = 1; rightSide = 1; }
+const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 
-    const rows = [];
-    let currentSeatNumber = 1;
+/**
+ * THE PROVEN ALGORITHM (v2) — IDENTICAL to Admin's ChassisCanvas.jsx.
+ * Keep these two implementations in lockstep when tweaking the grammar.
+ */
+export function buildChassisRows(layout) {
+  const {
+    total_rows        = 11,
+    cols_left         = 2,
+    cols_right        = 3,
+    has_rear_bench    = true,
+    bench_position    = 'MIDDLE',
+    driver_position   = 'RIGHT',
+    entrance_side     = 'NONE',
+    entrance_row      = 1,
+    front_rows        = [],
+    conductor_count   = 0,
+    conductor_side    = 'LEFT',
+    has_invalid_seat  = false,
+    invalid_seat_side = 'LEFT',
+  } = layout || {};
 
-    // Build the rows until we hit capacity
-    while (currentSeatNumber <= capacity) {
-        const row = [];
-        
-        // 1. Left Column(s)
-        for (let l = 0; l < leftSide; l++) {
-            if (currentSeatNumber <= capacity) row.push(currentSeatNumber++);
-            else row.push(null); // Empty physical space if capacity reached
+  const rows = [];
+  let rowNumber = 1;
+  let conductorCounter = 0;
+
+  const isEntranceRow = (r) => entrance_side !== 'NONE' && r === entrance_row;
+  const isDriverRow   = (r) => r === 1;
+
+  for (const row of front_rows) {
+    const leftArr  = Array.isArray(row.left)  ? row.left  : [];
+    const rightArr = Array.isArray(row.right) ? row.right : [];
+
+    const labelSlot = (slot) => {
+      if (slot.type === 'SEAT') {
+        const idx = (side, target) => {
+          const arr = side === 'left' ? leftArr : rightArr;
+          return arr.slice(0, arr.indexOf(target)).filter(s => s.type === 'SEAT').length;
+        };
+        return {
+          type: 'SEAT',
+          label: `${rowNumber}${ALPHABET[
+            (slot === leftArr.find(s => s === slot)
+              ? idx('left', slot)
+              : idx('right', slot))] || '?'}`,
+          bookable: true,
+        };
+      }
+      if (slot.type === 'CONDUCTOR') {
+        conductorCounter++;
+        return { type: 'CONDUCTOR', label: `SS${conductorCounter}`, bookable: false };
+      }
+      if (slot.type === 'DRIVER')  return { type: 'DRIVER',  label: null, bookable: false };
+      if (slot.type === 'ENTRY')   return { type: 'ENTRY',   label: 'E',  bookable: false };
+      if (slot.type === 'INVALID') return { type: 'INVALID', label: '1X', bookable: false };
+      return { type: 'UNKNOWN', label: '?', bookable: false };
+    };
+
+    rows.push({
+      left:    leftArr.map(labelSlot),
+      middle:  [{ type: 'AISLE', label: null, bookable: false }],
+      right:   rightArr.map(labelSlot),
+      isFrontRow: true,
+      isBench: false,
+      isDriverRow: true,
+      isEntranceRow: false,
+    });
+    rowNumber++;
+  }
+
+  const startRow = front_rows.length > 0 ? front_rows.length + 1 : 1;
+  const totalToRender = Math.max(startRow - 1, total_rows);
+
+  for (let r = startRow; r <= totalToRender; r++) {
+    const isLast = r === totalToRender;
+    const isBench = isLast && has_rear_bench;
+    const isDriverR   = isDriverRow(r);
+    const isEntranceR = isEntranceRow(r);
+    const isCollision = isDriverR && isEntranceR;
+
+    const left = [];
+    const right = [];
+    const middle = [];
+
+    // LEFT
+    if (isCollision && entrance_side === 'LEFT') {
+      left.push({ type: 'DRIVER', label: null, bookable: false });
+    } else if (isCollision && entrance_side !== 'LEFT') {
+      left.push({ type: 'ENTRY', label: 'E', bookable: false });
+    } else if (isDriverR && driver_position === 'LEFT') {
+      left.push({ type: 'DRIVER', label: null, bookable: false });
+    } else if (isEntranceR && entrance_side === 'LEFT') {
+      left.push({ type: 'ENTRY', label: 'E', bookable: false });
+    } else if (r === 1 && front_rows.length === 0) {
+      if (conductor_side === 'LEFT' && conductor_count > 0) {
+        const maxC = Math.min(conductor_count, cols_left);
+        for (let i = 0; i < maxC; i++) {
+          left.push({ type: 'CONDUCTOR', label: `SS${++conductorCounter}`, bookable: false });
         }
-        
-        // 2. The Aisle (Always present in standard buses)
-        row.push('AISLE');
-        
-        // 3. Right Column(s)
-        for (let r = 0; r < rightSide; r++) {
-            if (currentSeatNumber <= capacity) row.push(currentSeatNumber++);
-            else row.push(null);
-        }
-        
-        rows.push(row);
+      }
+      if (has_invalid_seat && invalid_seat_side === 'LEFT' && left.length < cols_left) {
+        left.push({ type: 'INVALID', label: '1X', bookable: false });
+      }
+      let letterIdx = left.filter(s => s.type === 'SEAT').length;
+      while (left.length < cols_left) {
+        left.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[letterIdx] || '?'}`, bookable: true });
+        letterIdx++;
+      }
+    } else {
+      for (let c = 0; c < cols_left; c++) {
+        left.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[c] || '?'}`, bookable: true });
+      }
     }
 
-    return rows;
-};
-
-// ========================================================================
-// THE NODE: INDIVIDUAL SEAT PHYSICS
-// ========================================================================
-const SeatNode = ({ seatId, seatStateObj, onSeatClick, isLocked }) => {
-    // If the seat doesn't physically exist in this slot, render empty space
-    if (!seatId || seatId === 'AISLE') {
-        return <div className={`seat-node ${seatId === 'AISLE' ? 'aisle' : 'empty-space'}`} />;
+    // RIGHT
+    if (isCollision && entrance_side === 'RIGHT') {
+      right.push({ type: 'DRIVER', label: null, bookable: false });
+    } else if (isCollision && entrance_side !== 'RIGHT') {
+      right.push({ type: 'ENTRY', label: 'E', bookable: false });
+    } else if (isDriverR && driver_position === 'RIGHT') {
+      right.push({ type: 'DRIVER', label: null, bookable: false });
+    } else if (isEntranceR && entrance_side === 'RIGHT') {
+      right.push({ type: 'ENTRY', label: 'E', bookable: false });
+    } else if (r === 1 && front_rows.length === 0) {
+      if (conductor_side === 'RIGHT' && conductor_count > 0) {
+        const maxC = Math.min(conductor_count, cols_right);
+        for (let i = 0; i < maxC; i++) {
+          right.push({ type: 'CONDUCTOR', label: `SS${++conductorCounter}`, bookable: false });
+        }
+      }
+      if (has_invalid_seat && invalid_seat_side === 'RIGHT' && right.length < cols_right) {
+        right.push({ type: 'INVALID', label: '1X', bookable: false });
+      }
+      let letterIdx = right.filter(s => s.type === 'SEAT').length;
+      while (right.length < cols_right) {
+        right.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[letterIdx] || '?'}`, bookable: true });
+        letterIdx++;
+      }
+    } else {
+      for (let c = 0; c < cols_right; c++) {
+        right.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[c] || '?'}`, bookable: true });
+      }
     }
 
-    // Determine State (Fallback to AVAILABLE if not in matrix)
-    const status = seatStateObj?.status || SEAT_STATES.AVAILABLE;
-    const dictionaryRule = SEAT_DICTIONARY[status];
-    
-    // An operator cannot click a seat if the market is closed (locked) OR if the dictionary forbids it
-    const isInteractive = dictionaryRule.canOperatorMutate && !isLocked;
+    // MIDDLE
+    if (isBench && bench_position === 'MIDDLE') {
+      middle.push({ type: 'REAR_MIDDLE', label: 'M', bookable: true });
+    } else if (isBench && bench_position === 'RIGHT') {
+      right.length = 0;
+      right.push({ type: 'REAR_MIDDLE', label: 'M', bookable: true });
+      middle.push({ type: 'AISLE', label: null, bookable: false });
+    } else {
+      middle.push({ type: 'AISLE', label: null, bookable: false });
+    }
 
-    return (
-        <button
-            className={`seat-node state-${status.toLowerCase()} ${isInteractive ? 'interactive' : 'locked'}`}
-            style={{
-                backgroundColor: dictionaryRule.color,
-                borderColor: dictionaryRule.borderColor,
-                color: dictionaryRule.textColor,
-            }}
-            onClick={(e) => {
-                if (isInteractive) onSeatClick(seatId, status, e.currentTarget);
-            }}
-            title={`${dictionaryRule.label} - Seat ${seatId}`}
-        >
-            <span className="seat-number">{seatId}</span>
-            {/* Visual Indicators for specific states */}
-            {status === SEAT_STATES.BOOKED_AYABUS && <CheckCircle2 size={10} className="seat-icon" />}
-            {status === SEAT_STATES.LOCKED_PENDING && <AlertTriangle size={10} className="seat-icon" />}
-        </button>
-    );
-};
+    rows.push({
+      left,
+      middle,
+      right,
+      isFrontRow: r === 1 && front_rows.length === 0,
+      isBench,
+      isDriverRow: isDriverR,
+      isEntranceRow: isEntranceR,
+      rowNumber,
+    });
+    rowNumber++;
+  }
 
-// ========================================================================
-// MAIN COMPONENT: THE SEAT MATRIX
-// ========================================================================
-const SeatMatrix = ({ schedule, onSeatActionRequest, isCutoffLocked }) => {
-    // 1. Extract Vehicle Telemetry
-    const capacity = schedule?.total_capacity || 60;
-    const layoutType = schedule?.vehicle?.seat_layout_type || '2x2';
-    const matrixState = schedule?.seat_matrix_state || {};
+  return rows;
+}
 
-    // 2. Generate the physical chassis grid (Memoized for high performance)
-    const chassisGrid = useMemo(() => generateBusChassis(capacity, layoutType), [capacity, layoutType]);
-
-    return (
-        <div className="seat-matrix-engine">
-            
-            {/* --- TOP: THE DYNAMIC LEGEND --- */}
-            <div className="matrix-legend">
-                <div className="legend-title">
-                    <Info size={14} /> Matrix Telemetry
-                </div>
-                <div className="legend-items">
-                    {Object.values(SEAT_DICTIONARY).map((rule) => (
-                        <div key={rule.code} className="legend-pill">
-                            <div 
-                                className="legend-color-box" 
-                                style={{ backgroundColor: rule.color, borderColor: rule.borderColor }} 
-                            />
-                            <span>{rule.label}</span>
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            {/* --- BODY: THE PHYSICAL BUS CHASSIS --- */}
-            <div className="chassis-viewport">
-                <div className="bus-chassis">
-                    
-                    {/* The Front Cabin (Driver Orientation) */}
-                    <div className="cabin-front">
-                        <div className="windshield" />
-                        <div className="driver-zone">
-                            <CircleDot size={24} color="var(--text-muted)" />
-                            <span className="driver-label">Captain</span>
-                        </div>
-                        <div className="door-zone">Entrance</div>
-                    </div>
-
-                    {/* The Passenger Cabin */}
-                    <div className="cabin-seating">
-                        {chassisGrid.map((row, rowIndex) => (
-                            <div key={`row-${rowIndex}`} className="seating-row">
-                                {row.map((seatId, colIndex) => (
-                                    <SeatNode 
-                                        key={`seat-${rowIndex}-${colIndex}`}
-                                        seatId={seatId}
-                                        seatStateObj={matrixState[seatId]}
-                                        onSeatClick={onSeatActionRequest}
-                                        isLocked={isCutoffLocked}
-                                    />
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-
-                    {/* The Rear Engine/Boot space */}
-                    <div className="cabin-rear"></div>
-                </div>
-            </div>
-
-            {/* --- INJECTED PHYSICS STYLESHEET --- */}
-            <style>{`
-                .seat-matrix-engine {
-                    display: flex;
-                    flex-direction: column;
-                    height: 100%;
-                    gap: 24px;
-                }
-
-                /* ==================== THE LEGEND ==================== */
-                .matrix-legend {
-                    background: var(--bg-surface);
-                    border: 1px solid var(--border-subtle);
-                    border-radius: var(--radius-md);
-                    padding: 16px;
-                }
-                .legend-title {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    font-size: 11px;
-                    font-weight: 800;
-                    color: var(--text-muted);
-                    text-transform: uppercase;
-                    letter-spacing: 1px;
-                    margin-bottom: 12px;
-                }
-                .legend-items {
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 16px;
-                }
-                .legend-pill {
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                    font-size: 12px;
-                    font-weight: 600;
-                    color: var(--text-main);
-                }
-                .legend-color-box {
-                    width: 14px;
-                    height: 14px;
-                    border-radius: 4px;
-                    border: 1px solid;
-                }
-
-                /* ==================== THE VIEWPORT & CHASSIS ==================== */
-                .chassis-viewport {
-                    flex: 1;
-                    overflow: auto; /* Handles massive buses natively */
-                    background: var(--bg-canvas);
-                    border-radius: var(--radius-lg);
-                    border: 1px solid var(--border-subtle);
-                    padding: 32px 16px;
-                    display: flex;
-                    justify-content: center; /* Centers the bus horizontally */
-                }
-
-                .bus-chassis {
-                    background: var(--bg-surface);
-                    border: 2px solid var(--border-strong);
-                    border-radius: 40px 40px 16px 16px; /* Bus shape */
-                    padding: 16px;
-                    width: fit-content;
-                    box-shadow: 0 20px 40px rgba(0,0,0,0.05);
-                    display: flex;
-                    flex-direction: column;
-                    gap: 24px;
-                }
-
-                /* --- FRONT CABIN --- */
-                .cabin-front {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 16px 24px 24px;
-                    border-bottom: 2px dashed var(--border-subtle);
-                    position: relative;
-                }
-                .windshield {
-                    position: absolute;
-                    top: -16px; left: 10%; right: 10%;
-                    height: 8px;
-                    background: var(--bg-input);
-                    border-radius: 0 0 10px 10px;
-                }
-                .driver-zone {
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    gap: 4px;
-                }
-                .driver-label { font-size: 9px; font-weight: 800; color: var(--text-muted); text-transform: uppercase; }
-                .door-zone {
-                    font-size: 10px; font-weight: 800; color: var(--text-muted);
-                    padding: 8px 12px; border: 1px solid var(--border-subtle); border-radius: 4px;
-                }
-
-                /* --- SEATING CABIN --- */
-                .cabin-seating {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 12px;
-                    padding: 0 16px;
-                }
-                .seating-row {
-                    display: flex;
-                    gap: 12px;
-                    justify-content: center;
-                }
-
-                /* --- SEAT NODES --- */
-                .seat-node {
-                    width: 44px;
-                    height: 44px;
-                    display: flex;
-                    flex-direction: column;
-                    align-items: center;
-                    justify-content: center;
-                    border-radius: 8px;
-                    border: 2px solid;
-                    font-size: 14px;
-                    font-weight: 900;
-                    position: relative;
-                    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-                }
-                
-                /* AISLE / EMPTY SPACE */
-                .seat-node.aisle { width: 32px; border: none; background: transparent; box-shadow: none; }
-                .seat-node.empty-space { border: none; background: transparent; box-shadow: none; pointer-events: none; }
-
-                /* INTERACTIVITY PHYSICS */
-                .seat-node.interactive { cursor: pointer; }
-                .seat-node.interactive:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); filter: brightness(1.1); }
-                .seat-node.interactive:active { transform: translateY(1px); }
-                .seat-node.locked { cursor: not-allowed; opacity: 0.8; }
-
-                /* ICONS ON SEATS */
-                .seat-icon { position: absolute; top: -6px; right: -6px; background: inherit; border-radius: 50%; padding: 2px; box-sizing: content-box; border: 2px solid var(--bg-surface); }
-
-                /* --- REAR CABIN --- */
-                .cabin-rear { height: 16px; border-top: 2px solid var(--border-subtle); margin-top: 8px; }
-            `}</style>
+// ── SEAT NODE ──
+const SeatNode = ({ slot, seatStateObj, onSeatClick, isLocked }) => {
+  // Non-bookable cells
+  if (!slot.bookable) {
+    if (slot.type === 'AISLE') return <div className="seat-node aisle" />;
+    if (slot.type === 'DRIVER') {
+      return (
+        <div className="seat-node non-bookable" title="Driver">
+          <CircleDot size={16} />
         </div>
-    );
+      );
+    }
+    if (slot.type === 'CONDUCTOR') {
+      return (
+        <div className="seat-node non-bookable" title={`Conductor ${slot.label}`}>
+          <span className="seat-number" style={{ fontSize: '10px' }}>{slot.label}</span>
+        </div>
+      );
+    }
+    if (slot.type === 'ENTRY') {
+      return (
+        <div className="seat-node entry-zone" title="Entrance / Door">
+          <span className="seat-number" style={{ fontSize: '9px', color: 'var(--status-success, #22C55E)' }}>E</span>
+        </div>
+      );
+    }
+    if (slot.type === 'INVALID') {
+      return (
+        <div className="seat-node non-bookable" title="Invalid / Wheelchair">
+          <span className="seat-number" style={{ fontSize: '9px' }}>1X</span>
+        </div>
+      );
+    }
+    return <div className="seat-node empty-space" />;
+  }
+
+  const seatId = slot.label;
+  const status = seatStateObj?.status || SEAT_STATES.AVAILABLE;
+  const rule   = SEAT_DICTIONARY[status] || SEAT_DICTIONARY[SEAT_STATES.AVAILABLE];
+  const isInteractive = rule.canOperatorMutate && !isLocked;
+
+  return (
+    <button
+      className={`seat-node state-${status.toLowerCase()} ${isInteractive ? 'interactive' : 'seat-locked'}`}
+      style={{
+        backgroundColor: rule.color,
+        borderColor:     rule.borderColor,
+        color:           rule.textColor,
+      }}
+      onClick={(e) => {
+        if (isInteractive) onSeatClick(seatId, status, e.currentTarget);
+      }}
+      title={`${rule.label} — Seat ${seatId}`}
+    >
+      <span className="seat-number">{seatId}</span>
+      {slot.type === 'REAR_MIDDLE' && <span style={{ position: 'absolute', top: 2, right: 4, fontSize: 8, opacity: 0.7 }}>M</span>}
+      {status === SEAT_STATES.BOOKED_AYABUS  && <CheckCircle2 size={10} className="seat-icon" />}
+      {status === SEAT_STATES.LOCKED_PENDING && <AlertTriangle size={10} className="seat-icon" />}
+    </button>
+  );
+};
+
+// ── MAIN ──
+const SeatMatrix = ({ schedule, onSeatActionRequest, isCutoffLocked }) => {
+  const layoutConfig  = schedule?.layoutConfig  || {};
+  const matrixState   = schedule?.seat_matrix_state || {};
+
+  const colsLeft  = layoutConfig.cols_left  ?? 2;
+  const colsRight = layoutConfig.cols_right ?? 2;
+
+  const chassisRows = useMemo(
+    () => buildChassisRows(layoutConfig),
+    [layoutConfig]
+  );
+
+  const gridTemplate =
+    `${'1fr '.repeat(colsLeft)}44px ${'1fr '.repeat(colsRight)}`.trim();
+
+  return (
+    <div className="seat-matrix-engine">
+
+      {/* LEGEND */}
+      <div className="matrix-legend">
+        <div className="legend-title">
+          <Info size={14} /> Matrix Telemetry
+        </div>
+        <div className="legend-items">
+          {Object.values(SEAT_DICTIONARY).map((rule) => (
+            <div key={rule.code} className="legend-pill">
+              <div
+                className="legend-color-box"
+                style={{ backgroundColor: rule.color, borderColor: rule.borderColor }}
+              />
+              <span>{rule.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* CHASSIS VIEWPORT */}
+      <div className="chassis-viewport">
+        <div className="bus-chassis">
+          <div className="cabin-seating">
+            {chassisRows.map((row, rowIdx) => {
+              const allSlots = [...row.left, ...row.middle, ...row.right];
+              return (
+                <div
+                  key={`row-${rowIdx}`}
+                  className="seating-row"
+                  style={{ gridTemplateColumns: gridTemplate }}
+                >
+                  {allSlots.map((slot, si) => (
+                    <SeatNode
+                      key={si}
+                      slot={slot}
+                      seatStateObj={matrixState[slot.label]}
+                      onSeatClick={onSeatActionRequest}
+                      isLocked={isCutoffLocked}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+          <div className="cabin-rear" />
+        </div>
+      </div>
+
+      <style>{`
+        .seat-matrix-engine { display: flex; flex-direction: column; height: 100%; gap: 24px; }
+        .matrix-legend { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md, 8px); padding: 16px; }
+        .legend-title { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 800; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+        .legend-items { display: flex; flex-wrap: wrap; gap: 16px; }
+        .legend-pill { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--text-main); }
+        .legend-color-box { width: 14px; height: 14px; border-radius: 4px; border: 1px solid; }
+
+        .chassis-viewport { flex: 1; overflow: auto; background: var(--bg-canvas); border-radius: var(--radius-lg, 12px); border: 1px solid var(--border-subtle); padding: 32px 16px; display: flex; justify-content: center; }
+        .bus-chassis { background: var(--bg-surface); border: 2px solid var(--border-strong); border-radius: 40px 40px 16px 16px; padding: 16px; width: fit-content; box-shadow: 0 20px 40px rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 24px; }
+
+        .cabin-seating { display: flex; flex-direction: column; gap: 12px; padding: 0 16px; }
+        .seating-row { display: grid; gap: 12px; justify-content: center; }
+
+        .seat-node { width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px; border: 2px solid; font-size: 14px; font-weight: 900; position: relative; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .seat-node.aisle { width: 32px; border: none; background: transparent; box-shadow: none; }
+        .seat-node.empty-space { border: none; background: transparent; box-shadow: none; pointer-events: none; }
+        .seat-node.non-bookable { background: var(--bg-input); border-color: var(--text-main); color: var(--text-main); cursor: default; opacity: 0.7; }
+        .seat-node.entry-zone { background: rgba(34,197,94,0.07); border-color: var(--status-success, #22C55E); border-left-width: 4px; cursor: default; }
+        .seat-node.interactive { cursor: pointer; }
+        .seat-node.interactive:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); filter: brightness(1.1); }
+        .seat-node.interactive:active { transform: translateY(1px); }
+        .seat-node.seat-locked { cursor: not-allowed; opacity: 0.8; }
+        .seat-icon { position: absolute; top: -6px; right: -6px; background: inherit; border-radius: 50%; padding: 2px; box-sizing: content-box; border: 2px solid var(--bg-surface); }
+
+        .cabin-rear { height: 16px; border-top: 2px solid var(--border-subtle); margin-top: 8px; }
+      `}</style>
+    </div>
+  );
 };
 
 export default SeatMatrix;

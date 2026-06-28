@@ -3,31 +3,21 @@
  * ------------------------------------------------------------------
  * Module: Partner Store / Data Layer
  * File: store.dictionary.js
- * * DESCRIPTION:
- * The absolute source of truth for all visual and relational mapping 
- * within the Partner Store ecosystem. Defines asset types, lifecycle 
- * statuses, and the exact taxonomy of Change Requests.
- * * WORLD-CLASS PHYSICS:
- * 1. IMMUTABILITY: All dictionaries are Object.freeze() to prevent memory corruption.
- * 2. KINETIC THEMING: Maps database statuses to global CSS variables (var(--status-success))
- * to guarantee flawless transitions between Light and Dark mode.
- * 3. FALLBACK SAFETY: Includes a fallback 'UNKNOWN' state to prevent UI crashes 
- * if the database returns an unexpected status string.
+ *
+ * FIXES APPLIED:
+ * 1. FLEET description updated — removed "Plate Numbers" since that column
+ *    was dropped from bus_configs in Session 1.
  */
 
-import { 
-    CheckCircle2, Clock, ShieldAlert, AlertTriangle, 
-    XCircle, FileEdit, Bus, Map, CalendarClock, Briefcase, 
+import {
+    CheckCircle2, Clock, ShieldAlert, AlertTriangle,
+    XCircle, FileEdit, Bus, Map, CalendarClock, Briefcase,
     Wrench, Banknote, Users
 } from 'lucide-react';
 
 // ========================================================================
 // 1. ASSET VAULT TAXONOMY
 // ========================================================================
-/**
- * Defines the 4 primary pillars of the Partner Store.
- * Used by the StoreTabBar and Master Controller to route the UI.
- */
 export const STORE_ASSET_TYPES = Object.freeze({
     CORPORATE: {
         id: 'CORPORATE',
@@ -38,7 +28,8 @@ export const STORE_ASSET_TYPES = Object.freeze({
     FLEET: {
         id: 'FLEET',
         label: 'Fleet Registry',
-        description: 'Physical Assets, Layouts & Plate Numbers',
+        // FIX: Removed "Plate Numbers" — column was dropped
+        description: 'Bus Configurations, Layouts & Amenities',
         icon: Bus
     },
     ROUTES: {
@@ -58,17 +49,13 @@ export const STORE_ASSET_TYPES = Object.freeze({
 // ========================================================================
 // 2. STATUS PHYSICS ENGINE
 // ========================================================================
-/**
- * Maps the exact Postgres operational status to UI rendering properties.
- * Provides the StoreAssetBadge with colors, icons, and opacity layers.
- */
 export const STORE_STATUS_DICTIONARY = Object.freeze({
     'ACTIVE': {
         label: 'Active Asset',
         code: 'ACTIVE',
         Icon: CheckCircle2,
         color: 'var(--status-success)',
-        bgOpacity: 'rgba(34, 197, 94, 0.1)',     // Emerald tint
+        bgOpacity: 'rgba(34, 197, 94, 0.1)',
         borderOpacity: 'rgba(34, 197, 94, 0.2)'
     },
     'PENDING_APPROVAL': {
@@ -76,14 +63,14 @@ export const STORE_STATUS_DICTIONARY = Object.freeze({
         code: 'PENDING_APPROVAL',
         Icon: Clock,
         color: 'var(--status-warning)',
-        bgOpacity: 'rgba(245, 158, 11, 0.1)',    // Amber tint
+        bgOpacity: 'rgba(245, 158, 11, 0.1)',
         borderOpacity: 'rgba(245, 158, 11, 0.2)'
     },
     'UPDATE_PENDING': {
         label: 'Modification Requested',
         code: 'UPDATE_PENDING',
         Icon: FileEdit,
-        color: 'var(--brand-primary)',           // AyaBus Gold
+        color: 'var(--brand-primary)',
         bgOpacity: 'rgba(206, 172, 92, 0.1)',
         borderOpacity: 'rgba(206, 172, 92, 0.2)'
     },
@@ -92,7 +79,7 @@ export const STORE_STATUS_DICTIONARY = Object.freeze({
         code: 'SUSPENDED',
         Icon: ShieldAlert,
         color: 'var(--status-error)',
-        bgOpacity: 'rgba(239, 68, 68, 0.1)',     // Red tint
+        bgOpacity: 'rgba(239, 68, 68, 0.1)',
         borderOpacity: 'rgba(239, 68, 68, 0.2)'
     },
     'REJECTED': {
@@ -114,13 +101,8 @@ export const STORE_STATUS_DICTIONARY = Object.freeze({
 });
 
 // ========================================================================
-// 3. CHANGE REQUEST TAXONOMY (The Controlled Write)
+// 3. CHANGE REQUEST TAXONOMY
 // ========================================================================
-/**
- * Pre-defined categories for the ChangeRequestEngine.
- * Forces the Partner to categorize their request before hitting the Admin queue,
- * making approvals faster and eliminating vague "Please fix this" messages.
- */
 export const CHANGE_REQUEST_TYPES = Object.freeze([
     {
         id: 'LAYOUT_MODIFICATION',
@@ -169,15 +151,8 @@ export const CHANGE_REQUEST_TYPES = Object.freeze([
 // ========================================================================
 // 4. DEFENSIVE UTILITIES
 // ========================================================================
-/**
- * Safely resolves an asset status string to its UI configuration.
- * Prevents white-screen crashes if a legacy DB record returns a missing status.
- * @param {string} rawStatus - The status string from the database.
- * @returns {Object} The complete visual configuration object.
- */
 export const getStoreStatusConfig = (rawStatus) => {
     if (!rawStatus) return STORE_STATUS_DICTIONARY['UNKNOWN'];
-    
     const normalizedStatus = rawStatus.toUpperCase().trim();
     return STORE_STATUS_DICTIONARY[normalizedStatus] || STORE_STATUS_DICTIONARY['UNKNOWN'];
 };
