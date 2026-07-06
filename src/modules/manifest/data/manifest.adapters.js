@@ -1,13 +1,23 @@
+import { resolveEffectiveLayout, migrateV2ToV3 } from '../engines/seat.engine';
+
 /**
- * 👑 AYABUS MANIFEST HUB (Sovereign Translator)
+ * 👑 AYABUS MANIFEST HUB (Sovereign Translator) — Schema v3
  * ------------------------------------------------------------------
  * File: manifest.adapters.js
  *
- * CHANGE (chassis redesign):
- * - layoutConfig fallback changed from '2x2' (string) to {} (object).
- *   SeatMatrix now uses buildChassisRows(schedule.layoutConfig), which
- *   expects a layout_config object, not a legacy string like '2x2'.
- *   All other fields unchanged.
+ * CHANGE (Chassis Grammar v3):
+ * - layoutConfig is no longer the raw layout_config_snapshot. It is now
+ *   the fully RESOLVED effective layout for this specific schedule/date —
+ *   snapshot merged with today's daily_overrides via
+ *   resolveEffectiveLayout(). SeatMatrix.jsx consumes this directly and
+ *   never calls resolveEffectiveLayout itself (see Phase 1.5 shape-diff
+ *   checklist).
+ * - Legacy v2 snapshots (schema_version !== 3) are transparently migrated
+ *   via migrateV2ToV3 before resolution, so old bus_configs never crash
+ *   SeatMatrix even if a Partner never re-saved them under v3.
+ * - layoutConfig fallback changed from '2x2' (string, v2-era bug) to a
+ *   safe empty resolved layout — { rows: [] } — so SeatMatrix always
+ *   receives an array to map over, never undefined.
  */
 
 // ========================================================================
@@ -19,6 +29,15 @@ export const adaptScheduleToManifest = (dbSchedule, targetDate) => {
     try {
         const route  = dbSchedule.routes      || {};
         const config = route.bus_configs || {};
+
+        // --- CHASSIS RESOLUTION PIPELINE ---
+        const rawSnapshot = config.layout_config || {};
+        const v3Snapshot = (rawSnapshot.schema_version === 3 && Array.isArray(rawSnapshot.rows))
+            ? rawSnapshot
+            : migrateV2ToV3(rawSnapshot);
+
+        const dailyOverrides = dbSchedule.daily_overrides || {};
+        const resolvedLayout = resolveEffectiveLayout(v3Snapshot, dailyOverrides, targetDate);
 
         return {
             // --- CORE IDENTITY ---
@@ -51,13 +70,15 @@ export const adaptScheduleToManifest = (dbSchedule, targetDate) => {
             // --- FLEET ASSETS ---
             busClass: config.bus_class || 'Standard',
 
-            // FIX: was `config.layout_config || '2x2'` — the '2x2' string
-            // broke SeatMatrix after the chassis redesign because
-            // buildChassisRows expects a layout_config object, not a string.
-            // Fall back to {} so SeatMatrix uses safe numeric defaults.
-            layoutConfig: (config.layout_config && typeof config.layout_config === 'object')
-                ? config.layout_config
-                : {},
+            // FIX (v3): layoutConfig is now the fully RESOLVED effective
+            // layout for targetDate — snapshot + daily_overrides merged.
+            // SeatMatrix.jsx renders this directly; it never resolves
+            // anything itself. Falls back to an empty-but-valid shape so
+            // SeatMatrix's `.rows.map()` never throws on a broken record.
+            layoutConfig: resolvedLayout || { schema_version: 3, rows: [], entries: [], outOfServiceSlotIds: [] },
+
+            seatMatrixState: dbSchedule.seat_matrix_state || {},
+            seat_matrix_state: dbSchedule.seat_matrix_state || {},
 
             bus_configs: config, // raw fallback for deep UI inspections
         };

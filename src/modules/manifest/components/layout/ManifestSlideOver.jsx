@@ -26,6 +26,10 @@ import {
 import CutoffBadge from '../states/CutoffBadge';
 import SeatMatrix from '../interactive/SeatMatrix';
 import PassengerLedger from '../interactive/PassengerLedger';
+import SeatActionPopover from '../interactive/SeatActionPopover';
+
+// --- SERVICE ---
+import { manifestService } from '../../data/manifest.service';
 
 // ========================================================================
 // HELPER PHYSICS: FORMATTERS
@@ -58,6 +62,62 @@ const formatDate = (dateString) => {
 // ========================================================================
 const ManifestSlideOver = ({ trip, tenantId, onClose }) => {
     const [activeTab, setActiveTab] = useState('MATRIX'); // 'MATRIX' | 'LEDGER'
+
+    // --- SEAT ACTION STATE ---
+    // The seat currently under the popover, and an optimistic local
+    // overlay of status changes. manifestService.updateSeatState is
+    // currently a stub (see its own header comment — it doesn't persist
+    // to the seat_matrix_state JSONB column yet), so without this local
+    // overlay a confirmed action would appear to do nothing until that
+    // backend work lands. This overlay is intentionally lightweight and
+    // in-memory only — it does NOT replace the real persistence layer.
+    const [popoverTarget, setPopoverTarget] = useState(null); // { seatId, currentStatus, anchorElement }
+    const [localStatusOverrides, setLocalStatusOverrides] = useState({}); // { [seatId]: newStatus }
+
+    // Merge the trip's real seat_matrix_state with any optimistic local
+    // overrides not yet reflected by a backend refresh.
+    const effectiveSeatMatrixState = {
+        ...(trip?.seatMatrixState || trip?.seat_matrix_state || {}),
+        ...Object.fromEntries(
+            Object.entries(localStatusOverrides).map(([seatId, status]) => [seatId, { status }])
+        ),
+    };
+
+    // Cutoff badge state (OPEN/WARNING/LOCKED/DEPARTED) and the database
+    // status (PENDING_APPROVAL/ACTIVE/etc.) are two DIFFERENT enums that
+    // this component currently conflates by passing trip.status to both
+    // CutoffBadge and this check — a pre-existing mismatch, not something
+    // introduced here. Until the real T-4-hour cutoff calculation exists
+    // (flagged as a TODO in manifest.service.js), this will effectively
+    // never lock seat interactions.
+    const isCutoffLocked = trip?.status === 'LOCKED';
+
+    const handleSeatActionRequest = (seatId, currentStatus, anchorElement, slot) => {
+        setPopoverTarget({ seatId, currentStatus, anchorElement, slot });
+    };
+
+    const handleConfirmSeatAction = async (seatId, requestedState, reasonCode) => {
+        try {
+            // NOTE: manifestService.updateSeatState doesn't accept a reason
+            // code today — SeatActionPopover.jsx collects one, but there's
+            // nowhere for it to go yet on the backend. Logged here so it
+            // isn't silently lost, pending that service being extended.
+            if (reasonCode) console.info('[ManifestSlideOver] Seat action reason (not yet persisted):', reasonCode);
+
+            const result = await manifestService.updateSeatState(trip.id, tenantId, seatId, requestedState);
+            if (result.success) {
+                setLocalStatusOverrides((prev) => ({ ...prev, [seatId]: requestedState }));
+            } else {
+                console.error('[ManifestSlideOver] updateSeatState failed:', result.error);
+                alert(result.error || 'Could not update seat status. Please try again.');
+            }
+        } catch (err) {
+            console.error('[ManifestSlideOver] updateSeatState threw:', err);
+            alert('Could not update seat status. Please try again.');
+        } finally {
+            setPopoverTarget(null);
+        }
+    };
 
     // --- LOCKOUT PHYSICS ---
     // Prevent the body from scrolling when the drawer is open
@@ -148,6 +208,9 @@ const ManifestSlideOver = ({ trip, tenantId, onClose }) => {
                                 scheduleId={trip.id} 
                                 layoutConfig={trip.layoutConfig}
                                 tenantId={tenantId}
+                                seatMatrixState={effectiveSeatMatrixState}
+                                onSeatActionRequest={handleSeatActionRequest}
+                                isCutoffLocked={isCutoffLocked}
                             />
                         </div>
                     ) : (
@@ -177,6 +240,18 @@ const ManifestSlideOver = ({ trip, tenantId, onClose }) => {
                     </div>
                 </footer>
             </div>
+
+            {/* SEAT ACTION POPOVER — booking-status mutation only (mark
+                unavailable/VIP/maintenance), separate from Admin's
+                structural SeatActionPopover used in the bus-config wizard. */}
+            <SeatActionPopover
+                isOpen={!!popoverTarget}
+                onClose={() => setPopoverTarget(null)}
+                anchorElement={popoverTarget?.anchorElement}
+                seatId={popoverTarget?.seatId}
+                currentStatus={popoverTarget?.currentStatus}
+                onConfirmAction={handleConfirmSeatAction}
+            />
 
             {/* --- COMPONENT CSS PHYSICS --- */}
             <style>{`

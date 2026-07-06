@@ -1,270 +1,148 @@
-import React, { useMemo } from 'react';
-import { CircleDot, Info, CheckCircle2, AlertTriangle } from 'lucide-react';
+import React from 'react';
+import { CircleDot, Info, CheckCircle2, AlertTriangle, DoorOpen, Lock, Wrench } from 'lucide-react';
 import { SEAT_STATES, SEAT_DICTIONARY } from '../../data/seat.dictionary';
 
 /**
- * SEAT MATRIX (Partner Portal — Dispatch Engine)
+ * SEAT MATRIX (Partner Portal — Dispatch Engine) — Schema v3
  * ------------------------------------------------------------------
- * Ported to the PROVEN v2 buildChassisRows algorithm. Identical signature
- * to Admin ChassisCanvas.jsx — same source of truth, same layout_config.
+ * REWRITTEN per Phase 1.5's shape-diff checklist. The old local
+ * `buildChassisRows()` (~90 lines) is deleted entirely (Amendment 9).
  *
- * The booking-state layering via SEAT_DICTIONARY is preserved — each
- * bookable slot's label (e.g. '1A', 'M', 'SS1') is used as the key into
- * schedule.seat_matrix_state to look up its current status.
+ * `schedule.layoutConfig` now arrives ALREADY RESOLVED — it is the
+ * output of `resolveEffectiveLayout()`, called inside
+ * `manifest.adapters.js`'s `adaptScheduleToManifest()`, not by this
+ * component. This component is a pure renderer of `layoutConfig.rows[]`.
  *
- * v2 fields read: driver_position, entrance_side, entrance_row,
- *                 bench_position, conductor_count, has_invalid_seat
+ * Booking-state layering via SEAT_DICTIONARY is preserved exactly as
+ * before — each bookable slot's derived key (see `seatKeyFor` below) is
+ * used to look up its current status in `schedule.seat_matrix_state`.
  */
 
-const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-
-/**
- * THE PROVEN ALGORITHM (v2) — IDENTICAL to Admin's ChassisCanvas.jsx.
- * Keep these two implementations in lockstep when tweaking the grammar.
- */
-export function buildChassisRows(layout) {
-  const {
-    total_rows        = 11,
-    cols_left         = 2,
-    cols_right        = 3,
-    has_rear_bench    = true,
-    bench_position    = 'MIDDLE',
-    driver_position   = 'RIGHT',
-    entrance_side     = 'NONE',
-    entrance_row      = 1,
-    front_rows        = [],
-    conductor_count   = 0,
-    conductor_side    = 'LEFT',
-    has_invalid_seat  = false,
-    invalid_seat_side = 'LEFT',
-  } = layout || {};
-
-  const rows = [];
-  let rowNumber = 1;
-  let conductorCounter = 0;
-
-  const isEntranceRow = (r) => entrance_side !== 'NONE' && r === entrance_row;
-  const isDriverRow   = (r) => r === 1;
-
-  for (const row of front_rows) {
-    const leftArr  = Array.isArray(row.left)  ? row.left  : [];
-    const rightArr = Array.isArray(row.right) ? row.right : [];
-
-    const labelSlot = (slot) => {
-      if (slot.type === 'SEAT') {
-        const idx = (side, target) => {
-          const arr = side === 'left' ? leftArr : rightArr;
-          return arr.slice(0, arr.indexOf(target)).filter(s => s.type === 'SEAT').length;
-        };
-        return {
-          type: 'SEAT',
-          label: `${rowNumber}${ALPHABET[
-            (slot === leftArr.find(s => s === slot)
-              ? idx('left', slot)
-              : idx('right', slot))] || '?'}`,
-          bookable: true,
-        };
-      }
-      if (slot.type === 'CONDUCTOR') {
-        conductorCounter++;
-        return { type: 'CONDUCTOR', label: `SS${conductorCounter}`, bookable: false };
-      }
-      if (slot.type === 'DRIVER')  return { type: 'DRIVER',  label: null, bookable: false };
-      if (slot.type === 'ENTRY')   return { type: 'ENTRY',   label: 'E',  bookable: false };
-      if (slot.type === 'INVALID') return { type: 'INVALID', label: '1X', bookable: false };
-      return { type: 'UNKNOWN', label: '?', bookable: false };
-    };
-
-    rows.push({
-      left:    leftArr.map(labelSlot),
-      middle:  [{ type: 'AISLE', label: null, bookable: false }],
-      right:   rightArr.map(labelSlot),
-      isFrontRow: true,
-      isBench: false,
-      isDriverRow: true,
-      isEntranceRow: false,
-    });
-    rowNumber++;
+// ── Derive a display label from a v3 slot (no stored `label` field) ──
+const seatLabelFor = (slot) => {
+  if (slot.type === 'SEAT' || slot.type === 'RESERVED') {
+    return slot.custom_label || (slot.number != null ? String(slot.number) : '');
   }
+  if (slot.type === 'CONDUCTOR') return slot.conductor_label || '';
+  if (slot.type === 'EMPTY_ZONE') return slot.empty_zone_label || '';
+  return '';
+};
 
-  const startRow = front_rows.length > 0 ? front_rows.length + 1 : 1;
-  const totalToRender = Math.max(startRow - 1, total_rows);
+// ── The key into seat_matrix_state — numeric/custom label string,
+// preserved for backward compatibility with existing booked seats ──
+const seatKeyFor = (slot) => seatLabelFor(slot);
 
-  for (let r = startRow; r <= totalToRender; r++) {
-    const isLast = r === totalToRender;
-    const isBench = isLast && has_rear_bench;
-    const isDriverR   = isDriverRow(r);
-    const isEntranceR = isEntranceRow(r);
-    const isCollision = isDriverR && isEntranceR;
+const isBookable = (slot) => slot.type === 'SEAT'; // RESERVED is numbered but NOT bookable
 
-    const left = [];
-    const right = [];
-    const middle = [];
-
-    // LEFT
-    if (isCollision && entrance_side === 'LEFT') {
-      left.push({ type: 'DRIVER', label: null, bookable: false });
-    } else if (isCollision && entrance_side !== 'LEFT') {
-      left.push({ type: 'ENTRY', label: 'E', bookable: false });
-    } else if (isDriverR && driver_position === 'LEFT') {
-      left.push({ type: 'DRIVER', label: null, bookable: false });
-    } else if (isEntranceR && entrance_side === 'LEFT') {
-      left.push({ type: 'ENTRY', label: 'E', bookable: false });
-    } else if (r === 1 && front_rows.length === 0) {
-      if (conductor_side === 'LEFT' && conductor_count > 0) {
-        const maxC = Math.min(conductor_count, cols_left);
-        for (let i = 0; i < maxC; i++) {
-          left.push({ type: 'CONDUCTOR', label: `SS${++conductorCounter}`, bookable: false });
-        }
-      }
-      if (has_invalid_seat && invalid_seat_side === 'LEFT' && left.length < cols_left) {
-        left.push({ type: 'INVALID', label: '1X', bookable: false });
-      }
-      let letterIdx = left.filter(s => s.type === 'SEAT').length;
-      while (left.length < cols_left) {
-        left.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[letterIdx] || '?'}`, bookable: true });
-        letterIdx++;
-      }
-    } else {
-      for (let c = 0; c < cols_left; c++) {
-        left.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[c] || '?'}`, bookable: true });
-      }
-    }
-
-    // RIGHT
-    if (isCollision && entrance_side === 'RIGHT') {
-      right.push({ type: 'DRIVER', label: null, bookable: false });
-    } else if (isCollision && entrance_side !== 'RIGHT') {
-      right.push({ type: 'ENTRY', label: 'E', bookable: false });
-    } else if (isDriverR && driver_position === 'RIGHT') {
-      right.push({ type: 'DRIVER', label: null, bookable: false });
-    } else if (isEntranceR && entrance_side === 'RIGHT') {
-      right.push({ type: 'ENTRY', label: 'E', bookable: false });
-    } else if (r === 1 && front_rows.length === 0) {
-      if (conductor_side === 'RIGHT' && conductor_count > 0) {
-        const maxC = Math.min(conductor_count, cols_right);
-        for (let i = 0; i < maxC; i++) {
-          right.push({ type: 'CONDUCTOR', label: `SS${++conductorCounter}`, bookable: false });
-        }
-      }
-      if (has_invalid_seat && invalid_seat_side === 'RIGHT' && right.length < cols_right) {
-        right.push({ type: 'INVALID', label: '1X', bookable: false });
-      }
-      let letterIdx = right.filter(s => s.type === 'SEAT').length;
-      while (right.length < cols_right) {
-        right.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[letterIdx] || '?'}`, bookable: true });
-        letterIdx++;
-      }
-    } else {
-      for (let c = 0; c < cols_right; c++) {
-        right.push({ type: 'SEAT', label: `${rowNumber}${ALPHABET[c] || '?'}`, bookable: true });
-      }
-    }
-
-    // MIDDLE
-    if (isBench && bench_position === 'MIDDLE') {
-      middle.push({ type: 'REAR_MIDDLE', label: 'M', bookable: true });
-    } else if (isBench && bench_position === 'RIGHT') {
-      right.length = 0;
-      right.push({ type: 'REAR_MIDDLE', label: 'M', bookable: true });
-      middle.push({ type: 'AISLE', label: null, bookable: false });
-    } else {
-      middle.push({ type: 'AISLE', label: null, bookable: false });
-    }
-
-    rows.push({
-      left,
-      middle,
-      right,
-      isFrontRow: r === 1 && front_rows.length === 0,
-      isBench,
-      isDriverRow: isDriverR,
-      isEntranceRow: isEntranceR,
-      rowNumber,
-    });
-    rowNumber++;
-  }
-
-  return rows;
-}
+// Sort a row's slots into ordered LEFT / MIDDLE / RIGHT groups.
+const groupSlots = (row) => {
+  const left   = row.slots.filter((s) => s.side === 'LEFT').sort((a, b) => a.position - b.position);
+  const middle = row.slots.filter((s) => s.side === 'MIDDLE').sort((a, b) => a.position - b.position);
+  // RIGHT side: position 0 = window-most = outer/rightmost physical seat.
+  // Descending order matches seat.engine.js's numbering direction — see
+  // that file's walkInOrder for the full explanation.
+  const right  = row.slots.filter((s) => s.side === 'RIGHT').sort((a, b) => b.position - a.position);
+  return { left, middle, right };
+};
 
 // ── SEAT NODE ──
-const SeatNode = ({ slot, seatStateObj, onSeatClick, isLocked }) => {
-  // Non-bookable cells
-  if (!slot.bookable) {
-    if (slot.type === 'AISLE') return <div className="seat-node aisle" />;
-    if (slot.type === 'DRIVER') {
-      return (
-        <div className="seat-node non-bookable" title="Driver">
-          <CircleDot size={16} />
-        </div>
-      );
-    }
-    if (slot.type === 'CONDUCTOR') {
-      return (
-        <div className="seat-node non-bookable" title={`Conductor ${slot.label}`}>
-          <span className="seat-number" style={{ fontSize: '10px' }}>{slot.label}</span>
-        </div>
-      );
-    }
-    if (slot.type === 'ENTRY') {
-      return (
-        <div className="seat-node entry-zone" title="Entrance / Door">
-          <span className="seat-number" style={{ fontSize: '9px', color: 'var(--status-success, #22C55E)' }}>E</span>
-        </div>
-      );
-    }
-    if (slot.type === 'INVALID') {
-      return (
-        <div className="seat-node non-bookable" title="Invalid / Wheelchair">
-          <span className="seat-number" style={{ fontSize: '9px' }}>1X</span>
-        </div>
-      );
-    }
-    return <div className="seat-node empty-space" />;
+const SeatNode = ({ slot, isBench, seatStateObj, outOfService, onSeatClick, isLocked }) => {
+  // Non-bookable, non-numbered cells.
+  if (slot.type === 'DRIVER') {
+    return (
+      <div className="seat-node non-bookable" title="Driver">
+        <CircleDot size={16} />
+      </div>
+    );
+  }
+  if (slot.type === 'CONDUCTOR') {
+    return (
+      <div className="seat-node non-bookable" title={`Conductor ${slot.conductor_label}`}>
+        <span className="seat-number" style={{ fontSize: '10px' }}>{slot.conductor_label}</span>
+      </div>
+    );
+  }
+  if (slot.type === 'ENTRY') {
+    return (
+      <div className="seat-node entry-zone" title="Entrance / Door">
+        <DoorOpen size={14} color="var(--status-success, #22C55E)" />
+      </div>
+    );
+  }
+  if (slot.type === 'EMPTY_ZONE') {
+    return (
+      <div className="seat-node empty-zone" title={slot.empty_zone_label || 'Empty Zone'}>
+        <span className="seat-number" style={{ fontSize: '8px' }}>{slot.empty_zone_label}</span>
+      </div>
+    );
+  }
+  if (slot.type === 'RESERVED') {
+    return (
+      <div className="seat-node non-bookable reserved" title={`Reserved Seat ${seatLabelFor(slot)}`}>
+        <Lock size={12} />
+        <span className="seat-number" style={{ fontSize: '9px' }}>{seatLabelFor(slot)}</span>
+      </div>
+    );
   }
 
-  const seatId = slot.label;
-  const status = seatStateObj?.status || SEAT_STATES.AVAILABLE;
+  // Bookable SEAT — status-driven.
+  const seatId = seatKeyFor(slot);
+  const status = outOfService ? SEAT_STATES.OUT_OF_SERVICE : (seatStateObj?.status || SEAT_STATES.AVAILABLE);
   const rule   = SEAT_DICTIONARY[status] || SEAT_DICTIONARY[SEAT_STATES.AVAILABLE];
   const isInteractive = rule.canOperatorMutate && !isLocked;
 
   return (
     <button
-      className={`seat-node state-${status.toLowerCase()} ${isInteractive ? 'interactive' : 'seat-locked'}`}
+      className={`seat-node state-${status.toLowerCase()} ${isBench ? 'is-bench' : ''} ${isInteractive ? 'interactive' : 'seat-locked'}`}
       style={{
         backgroundColor: rule.color,
         borderColor:     rule.borderColor,
         color:           rule.textColor,
       }}
       onClick={(e) => {
-        if (isInteractive) onSeatClick(seatId, status, e.currentTarget);
+        if (isInteractive) onSeatClick(seatId, status, e.currentTarget, slot);
       }}
       title={`${rule.label} — Seat ${seatId}`}
     >
       <span className="seat-number">{seatId}</span>
-      {slot.type === 'REAR_MIDDLE' && <span style={{ position: 'absolute', top: 2, right: 4, fontSize: 8, opacity: 0.7 }}>M</span>}
+      {isBench && <span style={{ position: 'absolute', top: 2, right: 4, fontSize: 8, opacity: 0.7 }}>M</span>}
       {status === SEAT_STATES.BOOKED_AYABUS  && <CheckCircle2 size={10} className="seat-icon" />}
       {status === SEAT_STATES.LOCKED_PENDING && <AlertTriangle size={10} className="seat-icon" />}
+      {status === SEAT_STATES.OUT_OF_SERVICE && <Wrench size={10} className="seat-icon" />}
     </button>
   );
 };
 
 // ── MAIN ──
-const SeatMatrix = ({ schedule, onSeatActionRequest, isCutoffLocked }) => {
-  const layoutConfig  = schedule?.layoutConfig  || {};
-  const matrixState   = schedule?.seat_matrix_state || {};
+// Accepts EITHER calling convention:
+//   <SeatMatrix schedule={scheduleObj} onSeatActionRequest={fn} isCutoffLocked={bool} />
+//   <SeatMatrix scheduleId={id} layoutConfig={obj} tenantId={id} seatMatrixState={obj} />
+// The second form is how ManifestSlideOver.jsx actually calls this
+// component today — supporting it directly here means the two files
+// don't have to be kept in perfect sync by hand.
+const SeatMatrix = ({
+  schedule,
+  scheduleId,
+  layoutConfig: flatLayoutConfig,
+  tenantId,
+  seatMatrixState: flatSeatMatrixState,
+  onSeatActionRequest,
+  isCutoffLocked,
+}) => {
+  // Already-resolved effective layout — see header note. No local call to
+  // resolveEffectiveLayout() here; that happens upstream in
+  // manifest.adapters.js's adaptScheduleToManifest().
+  const layoutConfig = schedule?.layoutConfig || flatLayoutConfig || { rows: [] };
+  const matrixState  = schedule?.seat_matrix_state || flatSeatMatrixState || {};
+  const outOfServiceSet = new Set(layoutConfig.outOfServiceSlotIds || []);
 
-  const colsLeft  = layoutConfig.cols_left  ?? 2;
-  const colsRight = layoutConfig.cols_right ?? 2;
+  const rows = Array.isArray(layoutConfig.rows) ? layoutConfig.rows : [];
 
-  const chassisRows = useMemo(
-    () => buildChassisRows(layoutConfig),
-    [layoutConfig]
-  );
-
-  const gridTemplate =
-    `${'1fr '.repeat(colsLeft)}44px ${'1fr '.repeat(colsRight)}`.trim();
+  // Never crash on click if the caller hasn't wired a handler yet — log
+  // once instead, so this is visible in dev without breaking the UI.
+  const handleSeatClick = onSeatActionRequest || ((seatId) => {
+    console.warn('[SeatMatrix] Seat', seatId, 'clicked, but no onSeatActionRequest handler was provided.');
+  });
 
   return (
     <div className="seat-matrix-engine">
@@ -291,23 +169,36 @@ const SeatMatrix = ({ schedule, onSeatActionRequest, isCutoffLocked }) => {
       <div className="chassis-viewport">
         <div className="bus-chassis">
           <div className="cabin-seating">
-            {chassisRows.map((row, rowIdx) => {
-              const allSlots = [...row.left, ...row.middle, ...row.right];
+            {rows.map((row) => {
+              const { left, middle, right } = groupSlots(row);
+              const isBenchRow = row.mode === 'BENCH';
+              const gridTemplate = isBenchRow
+                ? `${'1fr '.repeat(row.cols_left)}${'0.9fr '.repeat(Math.max(middle.length, 1))}${'1fr '.repeat(row.cols_right)}`.trim()
+                : `${'1fr '.repeat(row.cols_left)}44px ${'1fr '.repeat(row.cols_right)}`.trim();
+
+              const renderSlot = (slot, isBench = false) => (
+                <SeatNode
+                  key={slot.id}
+                  slot={slot}
+                  isBench={isBench}
+                  seatStateObj={matrixState[seatKeyFor(slot)]}
+                  outOfService={outOfServiceSet.has(slot.id)}
+                  onSeatClick={handleSeatClick}
+                  isLocked={isCutoffLocked}
+                />
+              );
+
               return (
                 <div
-                  key={`row-${rowIdx}`}
+                  key={`row-${row.row_number}`}
                   className="seating-row"
                   style={{ gridTemplateColumns: gridTemplate }}
                 >
-                  {allSlots.map((slot, si) => (
-                    <SeatNode
-                      key={si}
-                      slot={slot}
-                      seatStateObj={matrixState[slot.label]}
-                      onSeatClick={onSeatActionRequest}
-                      isLocked={isCutoffLocked}
-                    />
-                  ))}
+                  {left.map((s) => renderSlot(s))}
+                  {isBenchRow
+                    ? middle.map((s) => renderSlot(s, true))
+                    : <div className="seat-node aisle" />}
+                  {right.map((s) => renderSlot(s))}
                 </div>
               );
             })}
@@ -332,9 +223,11 @@ const SeatMatrix = ({ schedule, onSeatActionRequest, isCutoffLocked }) => {
 
         .seat-node { width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px; border: 2px solid; font-size: 14px; font-weight: 900; position: relative; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
         .seat-node.aisle { width: 32px; border: none; background: transparent; box-shadow: none; }
-        .seat-node.empty-space { border: none; background: transparent; box-shadow: none; pointer-events: none; }
+        .seat-node.empty-zone { border: 2px dashed var(--border-subtle); background: transparent; box-shadow: none; color: var(--text-muted); }
         .seat-node.non-bookable { background: var(--bg-input); border-color: var(--text-main); color: var(--text-main); cursor: default; opacity: 0.7; }
+        .seat-node.non-bookable.reserved { border-color: var(--status-warning, #F59E0B); color: var(--status-warning, #F59E0B); opacity: 1; gap: 1px; }
         .seat-node.entry-zone { background: rgba(34,197,94,0.07); border-color: var(--status-success, #22C55E); border-left-width: 4px; cursor: default; }
+        .seat-node.is-bench { border-color: var(--status-warning, #F59E0B); }
         .seat-node.interactive { cursor: pointer; }
         .seat-node.interactive:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); filter: brightness(1.1); }
         .seat-node.interactive:active { transform: translateY(1px); }
