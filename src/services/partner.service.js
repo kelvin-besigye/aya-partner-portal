@@ -6,7 +6,20 @@
  * * DESCRIPTION:
  * The primary bridge for managing the Operator's corporate identity 
  * and communication with the Admin Citadel.
- * * WORLD-CLASS ARCHITECTURE:
+ *
+ * FIX APPLIED (Sync Report — Partner Portal's own partner.service.js
+ * had the same bug independently fixed in the Admin Cockpit's copy):
+ * - submitConciergeRequest / fetchRequestHistory previously targeted
+ *   the nonexistent 'approvals_queue' table. Repointed to the real
+ *   'partner_requests' table, and the insert payload shape now matches
+ *   partner_requests' actual columns (request_type, priority,
+ *   description, status, urgency, requested_changes) instead of the
+ *   old { payload, urgency } shape that had no home on the real table.
+ *   This is the exact same class of fix already applied to the Admin
+ *   Cockpit's separate partner.service.js file — these are two distinct
+ *   files (different apps) that both needed the identical correction.
+ *
+ * WORLD-CLASS ARCHITECTURE (unchanged):
  * 1. TENANT LOCKDOWN: Every mutation requires a verified UUID (tenantId).
  * 2. CONCIERGE PIPELINE: Routes requests directly into the Admin's 
  * Maker-Checker Approvals Queue.
@@ -86,56 +99,59 @@ export const partnerService = {
 
     /**
      * Summarizes the fleet configurations assigned to this partner.
-     * FIX: Uses 'bus_class' to align with the physical database schema.
+     * Uses 'bus_class' to align with the physical database schema.
      */
-    // Path: apps/partner-portal/src/modules/partner/data/partner.service.js
+    fetchFleetSummary: async (tenantId) => {
+        try {
+            const { data, error } = await supabase
+                .from('bus_configs')
+                .select(`
+                    id, 
+                    bus_class, 
+                    status,
+                    gallery,
+                    created_at
+                `) // seat_count intentionally omitted — does not exist in DB
+                .eq('partner_id', tenantId)
+                .order('created_at', { ascending: false });
 
-fetchFleetSummary: async (tenantId) => {
-    try {
-        const { data, error } = await supabase
-            .from('bus_configs')
-            .select(`
-                id, 
-                bus_class, 
-                status,
-                gallery,
-                created_at
-            `) // 🔥 REMOVED: seat_count (Does not exist in DB)
-            .eq('partner_id', tenantId)
-            .order('created_at', { ascending: false });
-
-        if (error) throw error;
-        return { success: true, data: data || [] };
-    } catch (err) {
-        return handleDataException(err, 'Fleet Summary Aggregation');
-    }
-},
+            if (error) throw error;
+            return { success: true, data: data || [] };
+        } catch (err) {
+            return handleDataException(err, 'Fleet Summary Aggregation');
+        }
+    },
 
     // ========================================================================
-    // 3. THE CONCIERGE (Maker-Checker Integration)
+    // 3. THE CONCIERGE (Maker-Checker Integration) — FIXED
     // ========================================================================
 
     /**
-     * Submits a request to the Admin Cockpit's Approvals Queue.
-     * This is the "Live Wire" that connects the Portal to the Admin Citadel.
-     * * @param {string} tenantId - Requester identity.
-     * @param {string} type - e.g., 'ADD_BUS', 'ROUTE_CHANGE', 'DISPUTE_RECONCILIATION'.
+     * Submits a request into the real partner_requests table.
+     *
+     * FIX: was .from('approvals_queue') with a { payload, urgency } shape
+     * that had no home on the real table. Now maps to partner_requests'
+     * actual columns. payload.description is pulled out for the real
+     * `description` column; the full payload is preserved in
+     * `requested_changes` so no context is lost.
+     *
+     * @param {string} tenantId - Requester identity.
+     * @param {string} type - request_type, e.g. 'ADD_BUS', 'ROUTE_CHANGE', 'DISPUTE_RECONCILIATION'.
      * @param {Object} payload - The detailed JSON of the request.
      */
     submitConciergeRequest: async (tenantId, type, payload = {}) => {
         if (!tenantId) return { success: false, error: 'IDENTITY_LOCK_MISSING' };
 
         try {
-            // Inserts directly into the global approvals queue.
-            // This instantly triggers the notification in the Admin Cockpit.
             const { data, error } = await supabase
-                .from('approvals_queue')
+                .from('partner_requests')
                 .insert([{
                     partner_id: tenantId,
                     request_type: type,
-                    payload: payload,
-                    status: 'OPEN',
+                    description: payload.description || '',
+                    status: 'PENDING',
                     urgency: payload.urgency || 'NORMAL',
+                    requested_changes: payload,
                     created_at: new Date().toISOString()
                 }])
                 .select()
@@ -150,11 +166,12 @@ fetchFleetSummary: async (tenantId) => {
 
     /**
      * Fetches the status history of all requests submitted by this partner.
+     * FIX: was .from('approvals_queue')
      */
     fetchRequestHistory: async (tenantId) => {
         try {
             const { data, error } = await supabase
-                .from('approvals_queue')
+                .from('partner_requests')
                 .select('*')
                 .eq('partner_id', tenantId)
                 .order('created_at', { ascending: false });
@@ -175,7 +192,6 @@ fetchFleetSummary: async (tenantId) => {
      */
     fetchDashboardPulse: async (tenantId) => {
         try {
-            // Example: Summing ticket sales for today
             const { data, error } = await supabase
                 .from('routes')
                 .select('id, price_ticket, status')

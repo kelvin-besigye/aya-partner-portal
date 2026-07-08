@@ -45,7 +45,8 @@
  *           side: 'LEFT' | 'RIGHT' | 'MIDDLE',
  *           position: number,            // 0 = window-most, increasing → aisle
  *           type: 'SEAT' | 'CONDUCTOR' | 'RESERVED' | 'DRIVER' | 'ENTRY' | 'EMPTY_ZONE',
- *           number: number | null,
+ *           number: number | null,       // LEGACY (Chassis Grammar v3+) — null; was sequential integer
+ *           label: string | null,        // POSITIONAL (Chassis Grammar v4+) — e.g. "1A", "12C", stable across edits
  *           conductor_label: string | null,
  *           custom_label: string | null,
  *           empty_zone_label: string | null,
@@ -86,6 +87,7 @@ const emptySlot = (overrides = {}) => ({
   position: 0,
   type: 'SEAT',
   number: null,
+  label: null,            // Chassis Grammar v4 — positional id (e.g. "1A"); computed by renumberSeats
   conductor_label: null,
   custom_label: null,
   empty_zone_label: null,
@@ -129,12 +131,48 @@ const compactSide = (row, side) => {
 };
 
 // =====================================================================
-// 1. renumberSeats — the sequencing authority
+// 0a. columnLetter — positional identifier helper (Chassis Grammar v4)
 // =====================================================================
 /**
- * Re-walks all rows in canonical order and re-assigns sequential `number`
- * values to every SEAT and RESERVED slot (both display a seat number;
- * RESERVED "keeps its number" per Rule 10's Reserve Seat action).
+ * Computes the column letter (A, B, C, ...) for a slot at the given
+ * (side, position) within a row. Letters continue across the LEFT/MIDDLE/
+ * RIGHT zones so a row reads as one logical sequence:
+ *
+ *   LEFT    A, B, C, ...        (max 3 per side)
+ *   MIDDLE  continues from LEFT (bench seats only)
+ *   RIGHT   continues from MIDDLE (or LEFT if no bench in this row)
+ *
+ * @param {'LEFT'|'RIGHT'|'MIDDLE'} side
+ * @param {number} position   0 = window-most seat on that side
+ * @param {object} row        the row the slot lives in (for cols_left + middleCount)
+ * @returns {string} a single uppercase letter (e.g. 'A', 'D')
+ */
+export const columnLetter = (side, position, row) => {
+  const colsLeft = row?.cols_left ?? 0;
+  // LEFT: position 0 -> A, 1 -> B, ...
+  if (side === 'LEFT') return String.fromCharCode(65 + position);
+  // MIDDLE: continues where LEFT ended
+  if (side === 'MIDDLE') return String.fromCharCode(65 + colsLeft + position);
+  // RIGHT: continues where MIDDLE (or LEFT, if no bench in this row) ended
+  const middleCount = (row?.slots || []).filter((s) => s.side === 'MIDDLE').length;
+  const offset = colsLeft + middleCount + position;
+  return String.fromCharCode(65 + offset);
+};
+
+// =====================================================================
+// 1. renumberSeats — the sequencing authority (Chassis Grammar v4)
+// =====================================================================
+/**
+ * Re-walks all rows in canonical order and assigns a POSITIONAL `label`
+ * to every SEAT and RESERVED slot ("1A", "1B", ..., "12C"). The label is
+ * derived from (row_number, side, position) so it remains stable across
+ * edits — adding, removing, or converting a slot in another position
+ * cannot shift this slot's identity.
+ *
+ * The legacy `number` field is preserved as null (kept on the slot shape
+ * for adapter back-compat — read paths just see "no number" and fall
+ * through to `label`).
+ *
  * Conductor SS labels are independently re-sequenced in the same walk
  * order (SS1 = first CONDUCTOR slot encountered top-to-bottom).
  * Pure function — does not mutate its input.
@@ -142,19 +180,24 @@ const compactSide = (row, side) => {
 export function renumberSeats(rows) {
   const next = cloneRows(rows);
 
-  let seatCounter = 0;
   let conductorCounter = 0;
 
-  walkInOrder(next, (slot) => {
+  walkInOrder(next, (slot, row) => {
     if (slot.type === 'SEAT' || slot.type === 'RESERVED') {
-      seatCounter += 1;
-      slot.number = seatCounter;
+      // Positional identity — `${row.row_number}${columnLetter(...)}`.
+      // Computed live from row+side+position, so it never drifts from
+      // the slot's actual position even if intermediate edits shift it.
+      slot.label = `${row.row_number}${columnLetter(slot.side, slot.position, row)}`;
+      slot.number = null;            // legacy sequential int — null in v4
       slot.conductor_label = null;
     } else if (slot.type === 'CONDUCTOR') {
       conductorCounter += 1;
+      slot.label = null;
       slot.number = null;
       slot.conductor_label = `SS${conductorCounter}`;
     } else {
+      // DRIVER, ENTRY, EMPTY_ZONE — none of these get a positional label.
+      slot.label = null;
       slot.number = null;
       slot.conductor_label = null;
     }
@@ -185,7 +228,7 @@ export function generateRowsFromSteppers(config) {
     driver_position = 'RIGHT',
     entries         = [],
     has_rear_bench  = true,
-    bench_seat_count = 3,
+    bench_seat_count = 1,         // Chassis Grammar v4 default — was 3 (now matches single-curtain-row reality)
   } = config || {};
 
   const rows = [];
@@ -275,11 +318,29 @@ export function generateRowsFromSteppers(config) {
  * Inserts a new slot at `position` on `side` of `rowNumber`, shifting any
  * existing slots on that side at >= position outward by one. Calls
  * renumberSeats. Returns the updated rows array (does not mutate input).
+ *
+ * Chassis Grammar v4 invariant:
+ *   Inserting at position 0 is forbidden if that row+side already has a
+ *   DRIVER or ENTRY reservation — that would push the reservation
+ *   outward (or end up behind the new seat), which a real bus can't do.
+ *   Throws a clear error so the UI can surface an info-only state.
  */
 export function addSlot(rows, rowNumber, side, position, type = 'SEAT') {
   const next = cloneRows(rows);
   const row = next.find((r) => r.row_number === rowNumber);
   if (!row) throw new Error(`addSlot: row ${rowNumber} not found`);
+
+  // NEW (v4): block reservation collision at position 0.
+  if (position === 0) {
+    const reservation = row.slots.find(
+      (s) => s.position === 0 && (s.type === 'DRIVER' || s.type === 'ENTRY')
+    );
+    if (reservation) {
+      throw new Error(
+        `addSlot: position 0 of row ${rowNumber} (${side}) is reserved by ${reservation.type}.`
+      );
+    }
+  }
 
   // Shift existing slots on this side outward to make room.
   row.slots
@@ -302,6 +363,13 @@ export function addSlot(rows, rowNumber, side, position, type = 'SEAT') {
  * Removes the slot with the given stable id. Compacts the remaining
  * positions on that side to 0..n-1 (no gaps — Rule 5), then renumbers.
  * Throws if slotId is not found anywhere in rows. Returns updated rows.
+ *
+ * Chassis Grammar v4 invariant:
+ *   DRIVER and ENTRY slots are PINNED — they cannot be removed via this
+ *   path. They are managed exclusively via the Step 2 driver/entries
+ *   steppers. Calling removeSlot on one throws a clear error so the UI
+ *   can show an info-only state instead of offering a destructive
+ *   delete button.
  */
 export function removeSlot(rows, slotId) {
   const next = cloneRows(rows);
@@ -311,6 +379,12 @@ export function removeSlot(rows, slotId) {
     const idx = row.slots.findIndex((s) => s.id === slotId);
     if (idx !== -1) {
       const [removed] = row.slots.splice(idx, 1);
+      // NEW (v4): refuse to remove pinned slots.
+      if (removed.type === 'DRIVER' || removed.type === 'ENTRY') {
+        throw new Error(
+          `removeSlot: ${removed.type} slots are pinned — manage via stepper controls, not per-slot delete.`
+        );
+      }
       compactSide(row, removed.side);
       if (removed.side === 'LEFT') row.cols_left = row.slots.filter((s) => s.side === 'LEFT').length;
       if (removed.side === 'RIGHT') row.cols_right = row.slots.filter((s) => s.side === 'RIGHT').length;

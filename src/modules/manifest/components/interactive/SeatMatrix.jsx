@@ -3,7 +3,7 @@ import { CircleDot, Info, CheckCircle2, AlertTriangle, DoorOpen, Lock, Wrench } 
 import { SEAT_STATES, SEAT_DICTIONARY } from '../../data/seat.dictionary';
 
 /**
- * SEAT MATRIX (Partner Portal — Dispatch Engine) — Schema v3
+ * SEAT MATRIX (Partner Portal — Dispatch Engine) — Schema v3 / Chassis Grammar v5
  * ------------------------------------------------------------------
  * REWRITTEN per Phase 1.5's shape-diff checklist. The old local
  * `buildChassisRows()` (~90 lines) is deleted entirely (Amendment 9).
@@ -16,12 +16,28 @@ import { SEAT_STATES, SEAT_DICTIONARY } from '../../data/seat.dictionary';
  * Booking-state layering via SEAT_DICTIONARY is preserved exactly as
  * before — each bookable slot's derived key (see `seatKeyFor` below) is
  * used to look up its current status in `schedule.seat_matrix_state`.
+ *
+ * v5 changes (File 12, "worldclass dictionary pass"):
+ *
+ *   -  DELETED slot handling: an admin-deleted slot renders invisible,
+ *      grid-preserving, non-clickable. Resets to SEAT only via admin's
+ *      "Reset Manual Edits". This is the File 11 piece that got folded
+ *      into File 12.
+ *
+ *   -  Dictionary is now byte-identical across admin/partner/consumer
+ *      (see seat.dictionary.js sync-rule header). The colors rendered
+ *      here are the EXACT same hex values consumers see when they
+ *      load the same booking — partner and customer can no longer
+ *      disagree on "what does a booked seat look like".
+ *
+ * v3 unchanges preserved: dictionary-driven visuals, two calling
+ * conventions (schedule prop or flat props), SEAT_DICTIONARY legend.
  */
 
-// ── Derive a display label from a v3 slot (no stored `label` field) ──
+// ── Derive a display label from a v5 slot — prefers positional slot.label ──
 const seatLabelFor = (slot) => {
   if (slot.type === 'SEAT' || slot.type === 'RESERVED') {
-    return slot.custom_label || (slot.number != null ? String(slot.number) : '');
+    return slot.label || slot.custom_label || (slot.number != null ? String(slot.number) : '');
   }
   if (slot.type === 'CONDUCTOR') return slot.conductor_label || '';
   if (slot.type === 'EMPTY_ZONE') return slot.empty_zone_label || '';
@@ -46,7 +62,17 @@ const groupSlots = (row) => {
 };
 
 // ── SEAT NODE ──
-const SeatNode = ({ slot, isBench, seatStateObj, outOfService, onSeatClick, isLocked }) => {
+// benchCount: number of seats in the MIDDLE group (rear bench), used to
+// render a "N×" corner badge only when count > 1.
+const SeatNode = ({ slot, isBench, benchCount, seatStateObj, outOfService, onSeatClick, isLocked }) => {
+  // ── DELETED (v5 NEW — File 12) ────────────────────────────────────
+  // Admin-side permanent delete. Renders invisible, grid space
+  // preserved, no click. The delete is reversible only via admin's
+  // "Reset Manual Edits" button (after-render snapshot restore).
+  if (slot.type === 'DELETED') {
+    return <div className="seat-node deleted" aria-hidden="true" />;
+  }
+
   // Non-bookable, non-numbered cells.
   if (slot.type === 'DRIVER') {
     return (
@@ -105,7 +131,12 @@ const SeatNode = ({ slot, isBench, seatStateObj, outOfService, onSeatClick, isLo
       title={`${rule.label} — Seat ${seatId}`}
     >
       <span className="seat-number">{seatId}</span>
-      {isBench && <span style={{ position: 'absolute', top: 2, right: 4, fontSize: 8, opacity: 0.7 }}>M</span>}
+      {/* "N×" badge only when bench has more than one seat */}
+      {isBench && benchCount > 1 && (
+        <span style={{ position: 'absolute', top: 2, right: 4, fontSize: 8, opacity: 0.7 }}>
+          {benchCount}×
+        </span>
+      )}
       {status === SEAT_STATES.BOOKED_AYABUS  && <CheckCircle2 size={10} className="seat-icon" />}
       {status === SEAT_STATES.LOCKED_PENDING && <AlertTriangle size={10} className="seat-icon" />}
       {status === SEAT_STATES.OUT_OF_SERVICE && <Wrench size={10} className="seat-icon" />}
@@ -147,7 +178,8 @@ const SeatMatrix = ({
   return (
     <div className="seat-matrix-engine">
 
-      {/* LEGEND */}
+      {/* LEGEND — driven by SEAT_DICTIONARY. If you add a new state to
+          the dictionary, the legend picks it up automatically. */}
       <div className="matrix-legend">
         <div className="legend-title">
           <Info size={14} /> Matrix Telemetry
@@ -172,6 +204,7 @@ const SeatMatrix = ({
             {rows.map((row) => {
               const { left, middle, right } = groupSlots(row);
               const isBenchRow = row.mode === 'BENCH';
+              const benchCount = middle.length;
               const gridTemplate = isBenchRow
                 ? `${'1fr '.repeat(row.cols_left)}${'0.9fr '.repeat(Math.max(middle.length, 1))}${'1fr '.repeat(row.cols_right)}`.trim()
                 : `${'1fr '.repeat(row.cols_left)}44px ${'1fr '.repeat(row.cols_right)}`.trim();
@@ -181,6 +214,7 @@ const SeatMatrix = ({
                   key={slot.id}
                   slot={slot}
                   isBench={isBench}
+                  benchCount={benchCount}
                   seatStateObj={matrixState[seatKeyFor(slot)]}
                   outOfService={outOfServiceSet.has(slot.id)}
                   onSeatClick={handleSeatClick}
@@ -223,6 +257,19 @@ const SeatMatrix = ({
 
         .seat-node { width: 44px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px; border: 2px solid; font-size: 14px; font-weight: 900; position: relative; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
         .seat-node.aisle { width: 32px; border: none; background: transparent; box-shadow: none; }
+
+        /* DELETED (v5 NEW — File 12) — invisible, grid space preserved,
+           no click, no legend item (since it's invisible to users). */
+        .seat-node.deleted {
+          width: 44px;
+          height: 44px;
+          border: none;
+          background: transparent;
+          box-shadow: none;
+          opacity: 0;
+          pointer-events: none;
+        }
+
         .seat-node.empty-zone { border: 2px dashed var(--border-subtle); background: transparent; box-shadow: none; color: var(--text-muted); }
         .seat-node.non-bookable { background: var(--bg-input); border-color: var(--text-main); color: var(--text-main); cursor: default; opacity: 0.7; }
         .seat-node.non-bookable.reserved { border-color: var(--status-warning, #F59E0B); color: var(--status-warning, #F59E0B); opacity: 1; gap: 1px; }
@@ -235,6 +282,10 @@ const SeatMatrix = ({
         .seat-icon { position: absolute; top: -6px; right: -6px; background: inherit; border-radius: 50%; padding: 2px; box-sizing: content-box; border: 2px solid var(--bg-surface); }
 
         .cabin-rear { height: 16px; border-top: 2px solid var(--border-subtle); margin-top: 8px; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .seat-node { transition: none !important; }
+        }
       `}</style>
     </div>
   );

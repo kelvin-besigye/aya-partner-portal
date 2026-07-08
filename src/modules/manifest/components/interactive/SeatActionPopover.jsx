@@ -125,7 +125,7 @@ const SeatActionPopover = ({
                 {/* HEADER */}
                 <div className="popover-header">
                     <div className="header-identity">
-                        <span className="seat-badge">Seat {seatId}</span>
+                        <span className="seat-badge">Seat {seatId}</span>  {/* seatId is now positional (e.g. "7D") — derived upstream by SeatMatrix via seatLabelFor(slot) */}
                         <span className={`status-text ${isAvailable ? 'success' : 'muted'}`}>
                             {isAvailable ? 'Market Open' : 'Currently Blocked'}
                         </span>

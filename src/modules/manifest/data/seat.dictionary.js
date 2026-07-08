@@ -1,23 +1,65 @@
 /**
- * 👑 AYABUS MANIFEST HUB (Sovereign Physics Engine) — Schema v3
+ * 👑 AYABUS SEAT DICTIONARY (Sovereign Booking State Authority) — Chassis Grammar v5
  * ------------------------------------------------------------------
- * Module: Manifest Data Layer
  * File: seat.dictionary.js
  *
- * DESCRIPTION:
+ * THIS FILE HAS 3 BYTE-IDENTICAL COPIES IN THE CODEBASE:
+ *   - admin-cockpit/src/modules/bus-config/data/seat.dictionary.js
+ *   - partner-portal/src/modules/manifest/data/seat.dictionary.js
+ *   - consumer-web/src/modules/booking/data/seat.dictionary.js
+ *
+ * SYNC RULE (AyaBus_Chassis_V3_Directory.md + Chassis Grammar v5):
+ * if you change this file in one app, change it in all three.
+ *
+ * A safety-net script `tools/check-dictionary-sync.js` is provided that
+ * compares the three copies and fails CI if they drift — mirroring the
+ * pattern set by `tools/check-engine-sync.js` for seat.engine.js.
+ *
+ * ------------------------------------------------------------------
+ * PURPOSE
+ * ------------------------------------------------------------------
  * Defines the strict state machine for seat inventory. Guarantees zero
  * financial contamination between AyaBus digital sales and Partner
  * physical park sales.
  *
- * CHANGE (v3, Rule 21): added OUT_OF_SERVICE — a distinct state from
- * UNAVAILABLE. UNAVAILABLE means "sold at the park counter, not via
- * AyaBus" (still a real, occupied seat on this trip). OUT_OF_SERVICE
- * means "this physical seat is broken/removed for this specific trip"
- * (e.g. a torn seat, a mechanical fault) — it is never sellable by
- * either party, on this trip only. Distinguishing the two matters for
- * Partner reporting: UNAVAILABLE contributes to walk-in revenue
- * tracking; OUT_OF_SERVICE explicitly does not and should be excluded
- * from capacity utilization calculations.
+ *   AVAILABLE       — bookable; operator may mutate to UNAVAILABLE or
+ *                     OUT_OF_SERVICE for the active trip.
+ *   BOOKED_AYABUS   — sold via AyaBus App. Operator MUST NOT mutate this
+ *                     (doubles-booking prevention). Financial value: yes.
+ *   LOCKED_PENDING  — reserved while a Mobile Money confirmation is in
+ *                     flight. Operator MUST NOT mutate. Financial: no.
+ *   UNAVAILABLE     — sold at the physical park counter (walk-in /
+ *                     VIP) — still a real, occupied seat on this trip.
+ *                     Operator CAN revert to AVAILABLE if a walk-in
+ *                     cancels. Financial: no (excluded from AyaBus
+ *                     Treasury splits).
+ *   OUT_OF_SERVICE  — this physical seat is broken/removed for this
+ *                     specific trip. Never sellable, by either party,
+ *                     on this trip only. Operator CAN revert once
+ *                     repaired. Financial: no (excluded from both
+ *                     Treasury splits AND capacity utilization).
+ *
+ * This file pairs with `tools/check-dictionary-sync.js` (which
+ * complements `tools/check-engine-sync.js`):
+ *   - seat.engine.js      → slot TYPES (structural, who-checks-what)
+ *   - seat.dictionary.js  → booking STATES (per-trip runtime)
+ *
+ * The two files are intentionally separate so that structural changes
+ * (e.g. a new slot type in a future v6) can land without disturbing
+ * runtime state visuals, and vice-versa.
+ */
+
+/**
+ * CHANGE HISTORY (v3 → v5)
+ *   v3: added OUT_OF_SERVICE — distinct from UNAVAILABLE so Partner
+ *       reporting can distinguish "walk-in sold" from "physical seat
+ *       broken" (Rule 21).
+ *   v5: promoted to 3 byte-identical copies across the apps. No content
+ *       change vs. the prior partner-only copy. Sync-rule header added.
+ *       Now consumed by partner SeatMatrix.jsx (already was), admin
+ *       ChassisCanvas.jsx (future matrix-state overlays), and consumer
+ *       ChassisGrid.jsx (refactored in v5 to read booking-state visuals
+ *       from this dictionary instead of inline CSS classes).
  */
 
 export const SEAT_STATES = {
@@ -25,7 +67,7 @@ export const SEAT_STATES = {
     BOOKED_AYABUS: 'BOOKED_AYABUS',
     LOCKED_PENDING: 'LOCKED_PENDING',
     UNAVAILABLE: 'UNAVAILABLE',       // Walk-ins / park sale, on this trip
-    OUT_OF_SERVICE: 'OUT_OF_SERVICE', // Physically unusable, on this trip only (NEW v3)
+    OUT_OF_SERVICE: 'OUT_OF_SERVICE', // Physically unusable, on this trip only
 };
 
 export const SEAT_DICTIONARY = {
